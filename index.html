@@ -13,6 +13,7 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icon-180.png">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="vendor/leaflet/leaflet.css">
 <style>
 :root{
   --bg:#f4f7f9; --card:#fff; --ink:#14232e; --muted:#5b6b78; --line:#d9e2e8;
@@ -45,6 +46,17 @@ button:disabled{opacity:.5;cursor:default}
 .list button{width:100%;text-align:left;border:0;border-radius:0;background:transparent;padding:10px 4px;display:block}
 .list .name{font-weight:600;display:block}
 .list .meta{color:var(--muted);font-size:.85rem;display:block}
+.list .meta.good{color:var(--accent)}
+.list li.status{padding:10px 4px}
+#map{height:min(60vw,340px);min-height:260px;border-radius:10px;border:1px solid var(--line);isolation:isolate;z-index:0}
+.legend{display:flex;flex-wrap:wrap;gap:4px 14px;margin:6px 0 0;font-size:.8rem;color:var(--muted)}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;vertical-align:-1px;border:1.5px solid var(--muted)}
+.legend i.on{background:var(--accent);border-color:var(--card)}
+.legend i.old{background:var(--muted);opacity:.6;border-color:var(--card)}
+.legend i.pend{background:var(--card)}
+.legend i.here{background:var(--trend);border-color:#fff}
+.leaflet-popup-content-wrapper{background:var(--card);color:var(--ink)}
+.leaflet-popup-tip{background:var(--card)}
 .chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px}
 .chip{border-radius:999px;padding:8px 12px;min-height:40px;font-size:.9rem}
 .chip[aria-pressed=true]{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
@@ -85,6 +97,14 @@ footer a{color:var(--accent)}
       <button type="button" id="geoBtn" style="flex:0 0 auto">Use my location</button>
     </form>
     <p class="status" id="findStatus" role="status"></p>
+    <label class="inline"><input type="checkbox" id="recentOnly" checked> Only sites with results in the last 12 months</label>
+    <div class="bar hidden" id="checkBarWrap"><i id="checkBar"></i></div>
+    <p class="status" id="checkStatus" role="status"></p>
+    <button type="button" id="checkMore" class="hidden" style="margin-top:6px">Check more</button>
+    <div id="mapWrap" class="hidden" style="margin-top:10px">
+      <div id="map" role="application" aria-label="Map of sampling points"></div>
+      <div class="legend"><span><i class="here"></i>Search location</span><span><i class="on"></i>Results in last 12 months</span><span><i class="old"></i>Older results only</span><span><i class="pend"></i>Not checked yet</span><span id="mapCount"></span></div>
+    </div>
     <ul class="list" id="points"></ul>
   </section>
 
@@ -126,6 +146,7 @@ footer a{color:var(--accent)}
   </footer>
 </main>
 
+<script src="vendor/leaflet/leaflet.js"></script>
 <script>
 "use strict";
 const API = "https://environment.data.gov.uk/water-quality";
@@ -139,7 +160,7 @@ const CORE = [             // [notation, short label]
   ["0068","Turbidity"],["0135","Suspended solids"]
 ];
 const $ = id => document.getElementById(id);
-const state = { point:null, det:null, obs:[], token:0 };
+const state = { point:null, det:null, obs:[], token:0, fetchNote:"", fetchWarn:false };
 
 /* ---------- helpers ---------- */
 async function api(path, params, signal){
@@ -161,6 +182,16 @@ const fmtDate = t => new Date(t).toLocaleDateString("en-GB",{day:"numeric",month
 const POSTCODE = /^[A-Za-z]{1,2}\d[A-Za-z\d]?\s*\d[A-Za-z]{2}$/;
 
 /* ---------- 1. find location ---------- */
+const MAX_POINTS = 2000;   // safety cap on sampling points loaded for one search
+const CHECK_FIRST = 150;   // nearest sites whose data span is checked automatically
+const CHECK_STEP = 150;
+const STAT_CONCURRENCY = 6;
+const SHOW_STEP = 50;
+const search = { token:0, origin:null, radius:null, pts:[], total:0, desc:"", shown:SHOW_STEP, next:0, limit:0, running:false };
+const recentCutoff = () => new Date(Date.now() - 365*864e5).toISOString().slice(0,10);
+const fmtInt = n => Number(n).toLocaleString("en-GB");
+const fmtMonth = t => new Date(t).toLocaleDateString("en-GB",{month:"short",year:"numeric"});
+
 function setFindStatus(msg, cls){ const e=$("findStatus"); e.textContent=msg||""; e.className="status "+(cls||""); }
 
 $("findForm").addEventListener("submit", async e => {
@@ -178,9 +209,7 @@ $("findForm").addEventListener("submit", async e => {
       const { result } = await r.json();
       await searchNear({lat:result.latitude, lon:result.longitude}, radius, q.toUpperCase());
     } else {
-      setFindStatus("Searching sampling points…");
-      const d = await api("/sampling-point", { prefLabel:q, limit:50 });
-      showPoints(d.member||[], null, d.totalItems, "named “"+q+"”");
+      await runSearch({ prefLabel:q }, null, null, "named “"+q+"”");
     }
   } catch(err){ setFindStatus(err.message || String(err), "error"); }
 });
@@ -195,31 +224,210 @@ $("geoBtn").addEventListener("click", () => {
     { enableHighAccuracy:false, timeout:15000 });
 });
 
-async function searchNear(origin, radius, label){
-  setFindStatus("Searching sampling points…");
-  const d = await api("/sampling-point", { latitude:origin.lat, longitude:origin.lon, radius, limit:PAGE });
-  showPoints(d.member||[], origin, d.totalItems, "within "+radius+" km of "+label);
+function searchNear(origin, radius, label){
+  return runSearch({ latitude:origin.lat, longitude:origin.lon, radius }, origin, +radius, "within "+radius+" km of "+label, label);
 }
 
-function showPoints(members, origin, total, desc){
-  const pts = members.map(m => {
-    const g = parseWKT(m.geometry && m.geometry.asWKT);
-    return { id:m.notation, name:m.prefLabel, status:m.samplingPointStatus&&m.samplingPointStatus.prefLabel,
-             type:m.samplingPointType&&m.samplingPointType.prefLabel, area:m.area&&m.area.prefLabel, geo:g,
-             dist: origin&&g ? km(origin,g) : null };
-  });
-  if (origin) pts.sort((a,b)=>(a.dist??1e9)-(b.dist??1e9));
-  const ul = $("points"); ul.innerHTML = "";
-  if (!pts.length) { setFindStatus("No sampling points found "+desc+"."); return; }
-  setFindStatus(total + " sampling point" + (total===1?"":"s") + " " + desc + (total>pts.length?" (showing "+pts.length+")":"") + ". Tap one.");
-  pts.forEach(p => {
-    const li = document.createElement("li");
-    li.innerHTML = '<button type="button"><span class="name">'+esc(p.name)+'</span><span class="meta">'+
-      esc(p.id)+(p.dist!=null?" · "+p.dist.toFixed(1)+" km":"")+" · "+esc(p.type||"")+" · "+esc(p.status||"")+'</span></button>';
-    li.firstChild.addEventListener("click", () => choosePoint(p));
-    ul.appendChild(li);
-  });
+/* Load every sampling point for a query. The API returns at most 250 per request, so page with skip. */
+async function fetchAllPoints(params){
+  const first = await api("/sampling-point", { ...params, limit:PAGE, skip:0 });
+  const total = first.totalItems || 0;
+  let members = first.member || [];
+  const pages = Math.min(Math.ceil(total/PAGE), Math.ceil(MAX_POINTS/PAGE));
+  const skips = Array.from({length:Math.max(0,pages-1)}, (_,i) => (i+1)*PAGE);
+  const rest = await mapLimit(skips, 3, s => retry(() => api("/sampling-point", { ...params, limit:PAGE, skip:s })).then(d => d.member || []));
+  rest.forEach(r => members = members.concat(r));
+  return { members, total };
 }
+
+async function runSearch(params, origin, radiusKm, desc, label){
+  const token = ++search.token;
+  setFindStatus("Loading sampling points…"); $("checkStatus").textContent = ""; $("checkMore").classList.add("hidden");
+  const { members, total } = await fetchAllPoints(params);
+  if (token !== search.token) return;
+  const seen = new Set(), pts = [];
+  for (const m of members) {
+    if (seen.has(m.notation)) continue; seen.add(m.notation);
+    const g = parseWKT(m.geometry && m.geometry.asWKT);
+    pts.push({ id:m.notation, name:m.prefLabel, status:m.samplingPointStatus&&m.samplingPointStatus.prefLabel,
+               type:m.samplingPointType&&m.samplingPointType.prefLabel, area:m.area&&m.area.prefLabel, geo:g,
+               dist: origin&&g ? km(origin,g) : null, stat:null, idx:0 });
+  }
+  if (origin) pts.sort((a,b) => (a.dist??1e9) - (b.dist??1e9));
+  pts.forEach((p,i) => p.idx = i);
+  Object.assign(search, { origin, radius:radiusKm, label, pts, total, desc, shown:SHOW_STEP, next:0, limit:Math.min(CHECK_FIRST, pts.length), running:false });
+  $("points").innerHTML = "";
+  initMap(); drawMap();
+  if (!pts.length) { setFindStatus("No sampling points found " + desc + "."); renderList(); return; }
+  renderAll();
+  pumpStats(token);
+}
+
+/* Per-site data span: count and first date (page 1), latest date (last record), and count in the last 12 months. */
+async function getStats(id){
+  const path = "/sampling-point/" + encodeURIComponent(id) + "/observation";
+  try {
+    const recent = await retry(() => api(path, { dateFrom:recentCutoff(), limit:1 }), 1);
+    const all = await retry(() => api(path, { limit:1 }), 1);
+    const total = all.totalItems || 0;
+    let first = null, last = null;
+    if (total) {
+      first = all.member[0].phenomenonTime;
+      last = total === 1 ? first : (await retry(() => api(path, { limit:1, skip:total-1 }), 1)).member[0].phenomenonTime;
+    }
+    return { ok:true, total, first, last, recent:recent.totalItems || 0 };
+  } catch(e){ return { ok:false }; }
+}
+
+async function pumpStats(token){
+  if (search.running) return;
+  search.running = true;
+  await Promise.all(Array.from({length:STAT_CONCURRENCY}, async () => {
+    while (token === search.token && search.next < search.limit) {
+      const p = search.pts[search.next++];
+      if (p.stat) continue;
+      p.stat = await getStats(p.id);
+      scheduleRender();
+    }
+  }));
+  if (token === search.token) { search.running = false; scheduleRender(); }
+}
+$("checkMore").addEventListener("click", () => {
+  search.limit = Math.min(search.limit + CHECK_STEP, search.pts.length);
+  pumpStats(search.token); renderAll();
+});
+
+const isPass = p => !!(p.stat && p.stat.ok && p.stat.recent > 0);
+const isInactive = p => !!(p.stat && p.stat.ok && p.stat.recent === 0);
+function statText(p){
+  const s = p.stat;
+  if (!s) return p.idx < search.limit ? "Checking data…" : "Data span not checked yet";
+  if (!s.ok) return "Could not check data";
+  if (!s.total) return "No results recorded";
+  return fmtInt(s.total) + " results · " + fmtMonth(s.first) + " to " + fmtMonth(s.last) + " · " +
+         (s.recent ? fmtInt(s.recent) + " in the last 12 months" : "none in the last 12 months");
+}
+
+let renderTimer = null;
+function scheduleRender(){ if (renderTimer) return; renderTimer = setTimeout(() => { renderTimer = null; renderAll(); }, 400); }
+function renderAll(){ renderList(); updateMapStyles(); updateStatus(); }
+
+function updateStatus(){
+  const pts = search.pts; if (!pts.length) return;
+  const done = pts.filter(p => p.stat).length, pass = pts.filter(isPass).length;
+  const checking = search.next < search.limit || search.running;
+  let msg = fmtInt(search.total) + " sampling point" + (search.total===1?"":"s") + " " + search.desc;
+  if (search.total > pts.length) msg += " (loaded the first " + fmtInt(pts.length) + "; use a smaller radius to see them all)";
+  setFindStatus(msg + ".");
+  $("checkBar").style.width = search.limit ? (100*Math.min(done,search.limit)/search.limit)+"%" : "0";
+  $("checkBarWrap").classList.toggle("hidden", !checking);
+  $("checkStatus").textContent = checking
+    ? "Checking data availability: " + done + " of " + search.limit + (search.origin ? " nearest" : "") + " sites…"
+    : pass + " of " + done + " checked site" + (done===1?"":"s") + " " + (pass===1?"has":"have") + " results in the last 12 months.";
+  const left = pts.length - search.limit;
+  $("checkMore").classList.toggle("hidden", checking || left <= 0);
+  $("checkMore").textContent = "Check the next " + Math.min(CHECK_STEP, left) + " sites (" + fmtInt(left) + " unchecked)";
+}
+
+function renderList(){
+  const only = $("recentOnly").checked;
+  const list = only ? search.pts.filter(isPass) : search.pts;
+  const ul = $("points"); ul.innerHTML = "";
+  list.slice(0, search.shown).forEach(p => {
+    const li = document.createElement("li");
+    const b = document.createElement("button"); b.type = "button";
+    const n = document.createElement("span"); n.className = "name"; n.textContent = p.name;
+    const m1 = document.createElement("span"); m1.className = "meta";
+    m1.textContent = [p.id, p.dist!=null ? p.dist.toFixed(1)+" km" : null, p.type, p.status].filter(Boolean).join(" · ");
+    const m2 = document.createElement("span"); m2.className = "meta" + (isPass(p) ? " good" : ""); m2.textContent = statText(p);
+    b.append(n, m1, m2); b.addEventListener("click", () => choosePoint(p));
+    li.appendChild(b); ul.appendChild(li);
+  });
+  const rest = list.length - search.shown;
+  if (rest > 0) {
+    const li = document.createElement("li"), b = document.createElement("button"); b.type = "button";
+    b.textContent = "Show more (" + fmtInt(rest) + " more)"; b.className = "name";
+    b.addEventListener("click", () => { search.shown += SHOW_STEP; renderList(); });
+    li.appendChild(b); ul.appendChild(li);
+  } else if (!list.length && search.pts.length) {
+    const li = document.createElement("li"); li.className = "status";
+    li.textContent = only ? "No sites with results in the last 12 months confirmed yet. Untick the filter to see all sites." : "";
+    ul.appendChild(li);
+  }
+}
+$("recentOnly").addEventListener("change", () => { search.shown = SHOW_STEP; renderAll(); });
+
+/* ---------- map (Leaflet, vendored in vendor/leaflet) ---------- */
+const mapState = { map:null, layer:null, overlay:null, markers:new Map(), selectedId:null };
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+function initMap(){
+  if (!window.L) { $("mapWrap").classList.add("hidden"); return false; }
+  $("mapWrap").classList.remove("hidden");
+  if (!mapState.map) {
+    mapState.map = L.map("map", { preferCanvas:true, zoomSnap:0.5 }).setView([54.5,-2.5], 5);
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom:19,
+      attribution:'© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors' }).addTo(mapState.map);
+    mapState.layer = L.layerGroup().addTo(mapState.map);
+    mapState.overlay = L.layerGroup().addTo(mapState.map);
+  }
+  mapState.map.invalidateSize();
+  return true;
+}
+
+function popupEl(p){
+  const d = document.createElement("div");
+  const n = document.createElement("strong"); n.textContent = p.name; d.appendChild(n);
+  [ [p.id, p.dist!=null ? p.dist.toFixed(1)+" km" : null, p.status].filter(Boolean).join(" · "), statText(p) ].forEach(t => {
+    const x = document.createElement("div"); x.style.fontSize = ".85em"; x.textContent = t; d.appendChild(x); });
+  const b = document.createElement("button"); b.type = "button"; b.textContent = "Choose this site"; b.className = "primary";
+  b.style.cssText = "margin-top:6px;min-height:36px;padding:6px 10px";
+  b.addEventListener("click", () => { mapState.map.closePopup(); choosePoint(p); });
+  d.appendChild(b); return d;
+}
+
+function drawMap(){
+  if (!mapState.map) return;
+  mapState.layer.clearLayers(); mapState.overlay.clearLayers(); mapState.markers.clear();
+  const accent = css("--accent");
+  const pts = search.pts.filter(p => p.geo);
+  pts.forEach(p => {
+    const m = L.circleMarker([p.geo.lat, p.geo.lon], { radius:6, weight:1.5 });
+    m.bindPopup(() => popupEl(p));
+    mapState.markers.set(p.id, m); mapState.layer.addLayer(m);
+  });
+  let bounds = null;
+  if (search.origin) {
+    const o = search.origin;
+    const circle = L.circle([o.lat, o.lon], { radius:search.radius*1000, color:accent, weight:2, fillColor:accent, fillOpacity:.06, interactive:false });
+    const dot = L.circleMarker([o.lat, o.lon], { radius:7, color:"#fff", weight:2, fillColor:css("--trend"), fillOpacity:1, interactive:false })
+      .bindTooltip(search.label || "Search location", { direction:"top", offset:[0,-6] });
+    mapState.overlay.addLayer(circle); mapState.overlay.addLayer(dot);
+    bounds = circle.getBounds();
+  } else if (pts.length) bounds = L.latLngBounds(pts.map(p => [p.geo.lat, p.geo.lon]));
+  if (bounds) mapState.map.fitBounds(bounds, { padding:[12,12], maxZoom:15, animate:false });
+  updateMapStyles();
+}
+
+function updateMapStyles(){
+  if (!mapState.map) return;
+  const only = $("recentOnly").checked, accent = css("--accent"), muted = css("--muted"), card = css("--card"), ink = css("--ink");
+  let shown = 0;
+  search.pts.forEach(p => {
+    const m = mapState.markers.get(p.id); if (!m) return;
+    const visible = !(only && isInactive(p));
+    if (visible && !mapState.layer.hasLayer(m)) mapState.layer.addLayer(m);
+    if (!visible && mapState.layer.hasLayer(m)) mapState.layer.removeLayer(m);
+    if (visible) shown++;
+    const sel = p.id === mapState.selectedId;
+    if (isPass(p)) m.setStyle({ color:sel?ink:card, fillColor:accent, fillOpacity:.95, weight:sel?3:1.5, radius:sel?9:6 });
+    else if (p.stat) m.setStyle({ color:sel?ink:card, fillColor:muted, fillOpacity:.6, weight:sel?3:1.5, radius:sel?9:5 });
+    else m.setStyle({ color:sel?ink:muted, fillColor:card, fillOpacity:.5, weight:sel?3:1.2, radius:sel?9:5 });
+    if (sel) m.bringToFront();
+  });
+  $("mapCount").textContent = shown + " of " + search.pts.length + " sites shown";
+}
+function selectOnMap(id){ mapState.selectedId = id; updateMapStyles(); }
 
 /* ---------- 2. choose determinand ---------- */
 async function choosePoint(p){
@@ -227,7 +435,8 @@ async function choosePoint(p){
   try { localStorage.setItem("h2o.lastPoint", JSON.stringify(p)); } catch(e){}
   $("detCard").classList.remove("hidden"); $("chartCard").classList.add("hidden");
   $("pointTitle").textContent = p.name;
-  $("pointMeta").textContent = p.id + " · " + (p.type||"") + " · " + (p.area||"");
+  $("pointMeta").textContent = p.id + " · " + (p.type||"") + " · " + (p.area||"") + (p.stat ? " · " + statText(p) : "");
+  if (window.L && mapState.map) selectOnMap(p.id);
   $("dets").innerHTML = ""; $("detResults").innerHTML = ""; $("detStatus").textContent = "Checking which measurements exist…";
   $("detCard").scrollIntoView({behavior:"smooth", block:"start"});
   const token = ++state.token;
@@ -305,7 +514,11 @@ async function chooseDet(notation, label){
     });
     if (token !== state.token) return;
     rest.forEach(r => all = all.concat(r));
+    const uniq = new Set(all.map(m => m.id)).size;
     state.obs = normalise(all);
+    state.fetchNote = fmtInt(uniq) + " of " + fmtInt(total) + " results retrieved in " + pages + " request" + (pages===1?"":"s") +
+      (state.obs.length < uniq ? "; " + (uniq - state.obs.length) + " without a numeric value skipped" : "");
+    state.fetchWarn = uniq < total;
     wrap.classList.add("hidden");
     draw();
   } catch(err){
@@ -354,7 +567,8 @@ function draw(){
   const { d, unit, dropped } = visible();
   svg.innerHTML = ""; $("stats").innerHTML = ""; cs.className = "status";
   if (!d.length) { cs.textContent = "No data in this period."; return; }
-  cs.textContent = d.length + " observations, " + fmtDate(d[0].t) + " to " + fmtDate(d[d.length-1].t) + (dropped ? " ("+dropped+" in other units hidden)" : "") + ".";
+  cs.textContent = d.length + " observations, " + fmtDate(d[0].t) + " to " + fmtDate(d[d.length-1].t) + (dropped ? " ("+dropped+" in other units hidden)" : "") + ". " + state.fetchNote + (state.fetchWarn ? ". Some results are missing: try again." : ".");
+  if (state.fetchWarn) cs.className = "status warn";
   const W = Math.max(300, Math.round($("chartWrap").clientWidth)), H = Math.round(Math.max(240, Math.min(380, W*0.62))), M = {l:46, r:10, t:14, b:28};
   svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
   const t0 = d[0].t, t1 = d[d.length-1].t === t0 ? t0+864e5 : d[d.length-1].t;
@@ -417,7 +631,7 @@ function bindTip(d, X, Y, W, H, unit){
 }
 ["range","showLine","showTrend"].forEach(id => $(id).addEventListener("change", () => state.obs.length && draw()));
 let rz; window.addEventListener("resize", () => { $("tip").style.display = "none"; clearTimeout(rz); rz = setTimeout(() => state.obs.length && draw(), 150); });
-matchMedia("(prefers-color-scheme:dark)").addEventListener("change", () => state.obs.length && draw());
+matchMedia("(prefers-color-scheme:dark)").addEventListener("change", () => { state.obs.length && draw(); updateMapStyles(); });
 
 $("csvBtn").addEventListener("click", () => {
   const { d, unit } = visible(); if (!d.length) return;
