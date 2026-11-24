@@ -1,0 +1,437 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>H2O Water Quality</title>
+<meta name="description" content="Plot how Environment Agency water quality measurements change over time at a location in England.">
+<meta name="theme-color" content="#0b5c8a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="H2O">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<style>
+:root{
+  --bg:#f4f7f9; --card:#fff; --ink:#14232e; --muted:#5b6b78; --line:#d9e2e8;
+  --accent:#0b5c8a; --accent-ink:#fff; --warn:#a15c00; --err:#b3261e; --grid:#e6edf1; --series:#0b5c8a; --trend:#c2410c;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --bg:#0e171d; --card:#16232c; --ink:#e7eef2; --muted:#9db0bd; --line:#2a3b47;
+    --accent:#4fb0e6; --accent-ink:#06202e; --warn:#f0b35a; --err:#ff8a80; --grid:#223540; --series:#4fb0e6; --trend:#fb923c;
+  }
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  padding:env(safe-area-inset-top) max(16px,env(safe-area-inset-right)) env(safe-area-inset-bottom) max(16px,env(safe-area-inset-left))}
+main{max-width:760px;margin:0 auto;padding:16px 0 32px}
+h1{font-size:1.5rem;margin:8px 0 2px}
+h2{font-size:1.05rem;margin:0 0 10px}
+.sub{color:var(--muted);margin:0 0 16px;font-size:.92rem}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:14px}
+.row{display:flex;gap:8px;flex-wrap:wrap}
+.row>*{flex:1 1 auto}
+input,select,button{font:inherit;color:inherit}
+input[type=text],select{width:100%;padding:11px 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg);min-height:44px}
+button{padding:11px 14px;border-radius:10px;border:1px solid var(--line);background:var(--card);min-height:44px;cursor:pointer}
+button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600}
+button:disabled{opacity:.5;cursor:default}
+.list{list-style:none;margin:10px 0 0;padding:0}
+.list li{border-top:1px solid var(--line)}
+.list button{width:100%;text-align:left;border:0;border-radius:0;background:transparent;padding:10px 4px;display:block}
+.list .name{font-weight:600;display:block}
+.list .meta{color:var(--muted);font-size:.85rem;display:block}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px}
+.chip{border-radius:999px;padding:8px 12px;min-height:40px;font-size:.9rem}
+.chip[aria-pressed=true]{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.chip small{opacity:.75}
+.status{color:var(--muted);font-size:.9rem;margin:8px 0 0}
+.error{color:var(--err)}
+.warn{color:var(--warn)}
+.bar{height:6px;background:var(--grid);border-radius:3px;overflow:hidden;margin-top:8px}
+.bar>i{display:block;height:100%;width:0;background:var(--accent);transition:width .2s}
+#chartWrap{position:relative;touch-action:pan-y}
+svg{display:block;width:100%;height:auto;overflow:visible}
+svg text{fill:var(--muted);font-size:11px}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin-top:10px}
+.stat{background:var(--bg);border-radius:10px;padding:8px 10px}
+.stat b{display:block;font-size:1.05rem}
+.stat span{color:var(--muted);font-size:.78rem}
+#tip{position:absolute;pointer-events:none;background:var(--ink);color:var(--bg);padding:6px 9px;border-radius:8px;font-size:.8rem;white-space:nowrap;display:none;z-index:2}
+label.inline{display:flex;gap:8px;align-items:center;font-size:.9rem;min-height:36px}
+label.inline input{width:20px;height:20px}
+footer{color:var(--muted);font-size:.8rem}
+footer a{color:var(--accent)}
+.hidden{display:none!important}
+</style>
+</head>
+<body>
+<main>
+  <h1>H2O Water Quality</h1>
+  <p class="sub">Environment Agency measurements for England, plotted over time.</p>
+
+  <section class="card" id="findCard">
+    <h2>1. Find a location</h2>
+    <form id="findForm" class="row" autocomplete="off">
+      <input type="text" id="q" placeholder="Postcode or river / site name" enterkeyhint="search" aria-label="Postcode or site name">
+      <select id="radius" aria-label="Search radius" style="flex:0 0 110px">
+        <option value="1">1 km</option><option value="3" selected>3 km</option><option value="5">5 km</option><option value="10">10 km</option><option value="25">25 km</option>
+      </select>
+      <button class="primary" type="submit" style="flex:0 0 auto">Search</button>
+      <button type="button" id="geoBtn" style="flex:0 0 auto">Use my location</button>
+    </form>
+    <p class="status" id="findStatus" role="status"></p>
+    <ul class="list" id="points"></ul>
+  </section>
+
+  <section class="card hidden" id="detCard">
+    <h2>2. Choose a measurement</h2>
+    <div id="pointTitle" style="font-weight:600"></div>
+    <div class="status" id="pointMeta"></div>
+    <div class="chips" id="dets" role="group" aria-label="Measurements"></div>
+    <form id="detForm" class="row" style="margin-top:12px" autocomplete="off">
+      <input type="text" id="detQ" placeholder="Search other determinands (e.g. copper)" aria-label="Search determinands">
+      <button type="submit" style="flex:0 0 auto">Search</button>
+    </form>
+    <div class="chips" id="detResults"></div>
+    <p class="status" id="detStatus" role="status"></p>
+  </section>
+
+  <section class="card hidden" id="chartCard">
+    <h2 id="chartTitle">3. Trend</h2>
+    <div class="row" style="align-items:center">
+      <select id="range" aria-label="Period" style="flex:0 0 150px">
+        <option value="all">All data</option><option value="20">Last 20 years</option><option value="10">Last 10 years</option><option value="5">Last 5 years</option><option value="2">Last 2 years</option>
+      </select>
+      <label class="inline" style="flex:0 0 auto"><input type="checkbox" id="showLine" checked> Line</label>
+      <label class="inline" style="flex:0 0 auto"><input type="checkbox" id="showTrend" checked> Trend</label>
+      <button type="button" id="csvBtn" style="flex:0 0 auto">Download CSV</button>
+    </div>
+    <div class="bar hidden" id="barWrap"><i id="bar"></i></div>
+    <p class="status" id="chartStatus" role="status"></p>
+    <div id="chartWrap"><svg id="chart" role="img" aria-label="Time series chart"></svg><div id="tip"></div></div>
+    <div class="stats" id="stats"></div>
+  </section>
+
+  <footer>
+    <p>Data: Environment Agency <a href="https://environment.data.gov.uk/dataset/8034d47a-ba8a-4978-aca0-bd5d6e870536" target="_blank" rel="noopener">Water Quality Explorer</a>.
+    © Environment Agency copyright and/or database right 2025. All rights reserved. Contains public sector information licensed under the
+    <a href="https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/" target="_blank" rel="noopener">Open Government Licence v3.0</a>.
+    Postcode look-up by <a href="https://postcodes.io" target="_blank" rel="noopener">postcodes.io</a>.
+    Values shown with “&lt;” are below the lab detection limit and are plotted at that limit as hollow markers. The trend line is a simple least-squares fit to plotted values and is indicative only.</p>
+  </footer>
+</main>
+
+<script>
+"use strict";
+const API = "https://environment.data.gov.uk/water-quality";
+const HDR = { "Accept": "application/ld+json", "Accept-Crs": "http://www.opengis.net/def/crs/EPSG/0/4326" };
+const PAGE = 250;          // API maximum page size
+const CONCURRENCY = 4;
+const CORE = [             // [notation, short label]
+  ["9924","Dissolved oxygen"],["9901","Oxygen % sat"],["0111","Ammonia (N)"],["0117","Nitrate (N)"],
+  ["0118","Nitrite (N)"],["0116","Total ox. N"],["0180","Orthophosphate (P)"],["0348","Total P"],
+  ["0085","BOD 5-day"],["0061","pH"],["0076","Water temp"],["0077","Conductivity"],
+  ["0068","Turbidity"],["0135","Suspended solids"]
+];
+const $ = id => document.getElementById(id);
+const state = { point:null, det:null, obs:[], token:0 };
+
+/* ---------- helpers ---------- */
+async function api(path, params, signal){
+  const url = new URL(API + path);
+  for (const [k,v] of Object.entries(params||{})) if (v!==undefined && v!=="") url.searchParams.set(k,v);
+  const r = await fetch(url, { headers: HDR, signal });
+  if (!r.ok) throw new Error("API " + r.status + " for " + path);
+  return r.json();
+}
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+function parseWKT(w){ const m = /POINT\(\s*(-?[\d.]+)\s+(-?[\d.]+)\s*\)/.exec(w||""); return m ? {lon:+m[1], lat:+m[2]} : null; }
+function km(a,b){
+  const R=6371, rad=Math.PI/180, dLat=(b.lat-a.lat)*rad, dLon=(b.lon-a.lon)*rad;
+  const x=Math.sin(dLat/2)**2+Math.cos(a.lat*rad)*Math.cos(b.lat*rad)*Math.sin(dLon/2)**2;
+  return 2*R*Math.asin(Math.sqrt(x));
+}
+const fmt = n => { if (n===null||!isFinite(n)) return "–"; const a=Math.abs(n); return a>=100?n.toFixed(0):a>=10?n.toFixed(1):a>=1?n.toFixed(2):n.toPrecision(2); };
+const fmtDate = t => new Date(t).toLocaleDateString("en-GB",{day:"numeric",month:"short",year:"numeric"});
+const POSTCODE = /^[A-Za-z]{1,2}\d[A-Za-z\d]?\s*\d[A-Za-z]{2}$/;
+
+/* ---------- 1. find location ---------- */
+function setFindStatus(msg, cls){ const e=$("findStatus"); e.textContent=msg||""; e.className="status "+(cls||""); }
+
+$("findForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  const q = $("q").value.trim(); if (!q) return;
+  const radius = $("radius").value;
+  try {
+    if (POSTCODE.test(q)) {
+      setFindStatus("Looking up postcode…");
+      let r;
+      try { r = await fetch("https://api.postcodes.io/postcodes/" + encodeURIComponent(q.replace(/\s+/g,""))); }
+      catch(e){ throw new Error("Could not reach the postcode service (api.postcodes.io). This browser or preview may be blocking it. You can still search by river or site name."); }
+      if (r.status === 404) throw new Error("Postcode not recognised.");
+      if (!r.ok) throw new Error("Postcode service error " + r.status + ".");
+      const { result } = await r.json();
+      await searchNear({lat:result.latitude, lon:result.longitude}, radius, q.toUpperCase());
+    } else {
+      setFindStatus("Searching sampling points…");
+      const d = await api("/sampling-point", { prefLabel:q, limit:50 });
+      showPoints(d.member||[], null, d.totalItems, "named “"+q+"”");
+    }
+  } catch(err){ setFindStatus(err.message || String(err), "error"); }
+});
+
+$("geoBtn").addEventListener("click", () => {
+  if (!navigator.geolocation) return setFindStatus("Geolocation is not available in this browser.", "error");
+  setFindStatus("Getting your location…");
+  navigator.geolocation.getCurrentPosition(
+    async p => { try { await searchNear({lat:p.coords.latitude, lon:p.coords.longitude}, $("radius").value, "your location"); }
+                 catch(err){ setFindStatus(err.message, "error"); } },
+    err => setFindStatus(err.code === 1 ? "Location permission was denied or is blocked here (previews and embedded frames often block it). Allow location for this site, or search by postcode or name." : "Could not get location: " + err.message, "error"),
+    { enableHighAccuracy:false, timeout:15000 });
+});
+
+async function searchNear(origin, radius, label){
+  setFindStatus("Searching sampling points…");
+  const d = await api("/sampling-point", { latitude:origin.lat, longitude:origin.lon, radius, limit:PAGE });
+  showPoints(d.member||[], origin, d.totalItems, "within "+radius+" km of "+label);
+}
+
+function showPoints(members, origin, total, desc){
+  const pts = members.map(m => {
+    const g = parseWKT(m.geometry && m.geometry.asWKT);
+    return { id:m.notation, name:m.prefLabel, status:m.samplingPointStatus&&m.samplingPointStatus.prefLabel,
+             type:m.samplingPointType&&m.samplingPointType.prefLabel, area:m.area&&m.area.prefLabel, geo:g,
+             dist: origin&&g ? km(origin,g) : null };
+  });
+  if (origin) pts.sort((a,b)=>(a.dist??1e9)-(b.dist??1e9));
+  const ul = $("points"); ul.innerHTML = "";
+  if (!pts.length) { setFindStatus("No sampling points found "+desc+"."); return; }
+  setFindStatus(total + " sampling point" + (total===1?"":"s") + " " + desc + (total>pts.length?" (showing "+pts.length+")":"") + ". Tap one.");
+  pts.forEach(p => {
+    const li = document.createElement("li");
+    li.innerHTML = '<button type="button"><span class="name">'+esc(p.name)+'</span><span class="meta">'+
+      esc(p.id)+(p.dist!=null?" · "+p.dist.toFixed(1)+" km":"")+" · "+esc(p.type||"")+" · "+esc(p.status||"")+'</span></button>';
+    li.firstChild.addEventListener("click", () => choosePoint(p));
+    ul.appendChild(li);
+  });
+}
+
+/* ---------- 2. choose determinand ---------- */
+async function choosePoint(p){
+  state.point = p; state.det = null; state.obs = [];
+  try { localStorage.setItem("h2o.lastPoint", JSON.stringify(p)); } catch(e){}
+  $("detCard").classList.remove("hidden"); $("chartCard").classList.add("hidden");
+  $("pointTitle").textContent = p.name;
+  $("pointMeta").textContent = p.id + " · " + (p.type||"") + " · " + (p.area||"");
+  $("dets").innerHTML = ""; $("detResults").innerHTML = ""; $("detStatus").textContent = "Checking which measurements exist…";
+  $("detCard").scrollIntoView({behavior:"smooth", block:"start"});
+  const token = ++state.token;
+  const counts = await mapLimit(CORE, CONCURRENCY, async ([n]) => {
+    try { const d = await api("/sampling-point/"+encodeURIComponent(p.id)+"/observation", { determinand:n, limit:1 }); return d.totalItems||0; }
+    catch(e){ return null; }
+  });
+  if (token !== state.token) return;
+  let any = 0;
+  CORE.forEach(([n,label],i) => { if (counts[i]) { any++; addChip($("dets"), n, label, counts[i]); } });
+  $("detStatus").textContent = any ? "" : "No common measurements found here. Try searching for another determinand.";
+  if (counts.some(c => c===null)) $("detStatus").textContent += " Some checks failed (network?).";
+}
+
+function addChip(parent, notation, label, count){
+  const b = document.createElement("button");
+  b.type = "button"; b.className = "chip"; b.setAttribute("aria-pressed","false");
+  b.innerHTML = esc(label) + (count!=null ? " <small>("+count+")</small>" : "");
+  b.addEventListener("click", () => {
+    document.querySelectorAll(".chip").forEach(c => c.setAttribute("aria-pressed","false"));
+    b.setAttribute("aria-pressed","true");
+    chooseDet(notation, label);
+  });
+  parent.appendChild(b);
+}
+
+$("detForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  const q = $("detQ").value.trim(); if (!q || !state.point) return;
+  $("detStatus").textContent = "Searching…"; $("detResults").innerHTML = "";
+  try {
+    const d = await api("/codelist/determinand", { prefLabel:q, limit:30 });
+    const list = d.member||[];
+    const counts = await mapLimit(list, CONCURRENCY, async m => {
+      try { return (await api("/sampling-point/"+encodeURIComponent(state.point.id)+"/observation", { determinand:m.notation, limit:1 })).totalItems||0; }
+      catch(e){ return 0; }
+    });
+    let n = 0;
+    list.forEach((m,i) => { if (counts[i]) { n++; addChip($("detResults"), m.notation, m.prefLabel, counts[i]); } });
+    $("detStatus").textContent = n ? (d.totalItems>list.length ? "Showing matches from the first "+list.length+" of "+d.totalItems+" determinands." : "") :
+      "None of the "+d.totalItems+" matching determinands have data at this point.";
+  } catch(err){ $("detStatus").textContent = err.message; $("detStatus").className = "status error"; }
+});
+
+/* ---------- 3. fetch + plot ---------- */
+async function mapLimit(items, limit, fn){
+  const out = new Array(items.length); let i = 0;
+  await Promise.all(Array.from({length:Math.min(limit,items.length)}, async () => {
+    while (i < items.length) { const k = i++; out[k] = await fn(items[k], k); }
+  }));
+  return out;
+}
+
+async function chooseDet(notation, label){
+  const token = ++state.token;
+  state.det = { notation, label }; state.obs = [];
+  $("chartCard").classList.remove("hidden");
+  $("chartTitle").textContent = label + " · " + state.point.name;
+  $("stats").innerHTML = ""; $("chart").innerHTML = "";
+  $("chartCard").scrollIntoView({behavior:"smooth", block:"start"});
+  const path = "/sampling-point/"+encodeURIComponent(state.point.id)+"/observation";
+  const bar = $("bar"), wrap = $("barWrap"); wrap.classList.remove("hidden"); bar.style.width = "0";
+  const cs = $("chartStatus"); cs.className = "status"; cs.textContent = "Fetching observations…";
+  try {
+    const first = await api(path, { determinand:notation, limit:PAGE, skip:0 });
+    if (token !== state.token) return;
+    const total = first.totalItems||0, pages = Math.ceil(total/PAGE);
+    let all = first.member||[], done = 1;
+    bar.style.width = (100*done/pages)+"%";
+    const skips = Array.from({length:pages-1}, (_,i) => (i+1)*PAGE);
+    const rest = await mapLimit(skips, CONCURRENCY, async s => {
+      const d = await retry(() => api(path, { determinand:notation, limit:PAGE, skip:s }));
+      if (token === state.token) { done++; bar.style.width = (100*done/pages)+"%"; cs.textContent = "Fetching observations… "+done+"/"+pages+" pages"; }
+      return d.member||[];
+    });
+    if (token !== state.token) return;
+    rest.forEach(r => all = all.concat(r));
+    state.obs = normalise(all);
+    wrap.classList.add("hidden");
+    draw();
+  } catch(err){
+    if (token !== state.token) return;
+    wrap.classList.add("hidden"); cs.className = "status error"; cs.textContent = "Failed: " + (err.message||err);
+  }
+}
+async function retry(fn, n=2){ for (let i=0;;i++){ try { return await fn(); } catch(e){ if (i>=n) throw e; await new Promise(r=>setTimeout(r,500*(i+1))); } } }
+
+function normalise(members){
+  const seen = new Set(), out = [];
+  for (const m of members) {
+    if (seen.has(m.id)) continue; seen.add(m.id);
+    const r = m.hasResult || {};
+    let v = null, cens = null;
+    if (typeof r.numericValue === "number") v = r.numericValue;
+    else if (typeof r.upperBound === "number") { v = r.upperBound; cens = "<"; }
+    else if (typeof r.lowerBound === "number") { v = r.lowerBound; cens = ">"; }
+    else { const x = parseFloat(String(m.hasSimpleResult||"").replace(/[<>]/g,"")); if (isFinite(x)) { v = x; const s=String(m.hasSimpleResult).trim()[0]; cens = s==="<"||s===">"?s:null; } }
+    const t = Date.parse(m.phenomenonTime);
+    if (v===null || !isFinite(t)) continue;
+    const unit = (r.hasUnit && (r.hasUnit.altLabel||r.hasUnit.prefLabel)) || m.hasUnit || "";
+    out.push({ t, v, cens, unit, raw:m.hasSimpleResult, purpose:m.hasSample&&m.hasSample.isResultOf&&m.hasSample.isResultOf.samplingPurpose&&m.hasSample.isResultOf.samplingPurpose.prefLabel });
+  }
+  return out.sort((a,b)=>a.t-b.t);
+}
+
+/* ---------- chart ---------- */
+function visible(){
+  const yrs = $("range").value; let d = state.obs;
+  if (yrs !== "all") { const cut = Date.now() - (+yrs)*365.25*864e5; d = d.filter(o => o.t >= cut); }
+  // keep one unit (the most common) so axes are meaningful
+  const cnt = {}; d.forEach(o => cnt[o.unit] = (cnt[o.unit]||0)+1);
+  const unit = Object.keys(cnt).sort((a,b)=>cnt[b]-cnt[a])[0] || "";
+  return { d: d.filter(o => o.unit === unit), unit, dropped: d.length - (cnt[unit]||0) };
+}
+function niceTicks(lo, hi, n){
+  if (lo===hi) { lo -= 1; hi += 1; }
+  const step0 = (hi-lo)/n, mag = 10**Math.floor(Math.log10(step0)), r = step0/mag;
+  const step = (r<1.5?1:r<3?2:r<7?5:10)*mag, a = Math.floor(lo/step)*step, ticks = [];
+  for (let v=a; v<=hi+step*0.5; v+=step) ticks.push(+v.toFixed(12));
+  return ticks;
+}
+function draw(){
+  const svg = $("chart"), cs = $("chartStatus");
+  const { d, unit, dropped } = visible();
+  svg.innerHTML = ""; $("stats").innerHTML = ""; cs.className = "status";
+  if (!d.length) { cs.textContent = "No data in this period."; return; }
+  cs.textContent = d.length + " observations, " + fmtDate(d[0].t) + " to " + fmtDate(d[d.length-1].t) + (dropped ? " ("+dropped+" in other units hidden)" : "") + ".";
+  const W = Math.max(300, Math.round($("chartWrap").clientWidth)), H = Math.round(Math.max(240, Math.min(380, W*0.62))), M = {l:46, r:10, t:14, b:28};
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  const t0 = d[0].t, t1 = d[d.length-1].t === t0 ? t0+864e5 : d[d.length-1].t;
+  let lo = Math.min(...d.map(o=>o.v)), hi = Math.max(...d.map(o=>o.v));
+  const pad = (hi-lo)*0.05 || Math.abs(hi)*0.1 || 1; lo -= pad; hi += pad;
+  if (lo < 0 && Math.min(...d.map(o=>o.v)) >= 0) lo = 0;
+  const yt = niceTicks(lo, hi, 5); lo = Math.min(lo, yt[0]); hi = Math.max(hi, yt[yt.length-1]);
+  const X = t => M.l + (t-t0)/(t1-t0)*(W-M.l-M.r), Y = v => H-M.b - (v-lo)/(hi-lo)*(H-M.t-M.b);
+  const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const cSeries = css("--series"), cTrend = css("--trend"), cGrid = css("--grid"), cBg = css("--card");
+  let s = "";
+  yt.forEach(v => { const y = Y(v); s += `<line x1="${M.l}" x2="${W-M.r}" y1="${y}" y2="${y}" stroke="${cGrid}"/><text x="${M.l-6}" y="${y+4}" text-anchor="end">${fmt(v)}</text>`; });
+  const spanY = (t1-t0)/(365.25*864e5), y0 = new Date(t0).getFullYear(), y1 = new Date(t1).getFullYear();
+  if (spanY > 1.5) {
+    const stepY = Math.max(1, Math.ceil((y1-y0)/6));
+    for (let y=Math.ceil(y0/stepY)*stepY; y<=y1; y+=stepY) { const x = X(Date.UTC(y,0,1)); if (x<M.l||x>W-M.r) continue;
+      s += `<line x1="${x}" x2="${x}" y1="${H-M.b}" y2="${H-M.b+4}" stroke="${cGrid}"/><text x="${x}" y="${H-M.b+17}" text-anchor="middle">${y}</text>`; }
+  } else {
+    for (let i=0;i<=4;i++){ const t=t0+(t1-t0)*i/4, x=X(t);
+      s += `<line x1="${x}" x2="${x}" y1="${H-M.b}" y2="${H-M.b+4}" stroke="${cGrid}"/><text x="${x}" y="${H-M.b+17}" text-anchor="${i==0?"start":i==4?"end":"middle"}">${new Date(t).toLocaleDateString("en-GB",{month:"short",year:"2-digit"})}</text>`; }
+  }
+  s += `<text x="${M.l}" y="${M.t+8}" style="font-size:11px" dx="4">${esc(unit)}</text>`;
+  if ($("showLine").checked) s += `<polyline fill="none" stroke="${cSeries}" stroke-opacity=".45" stroke-width="1.2" points="${d.map(o=>X(o.t).toFixed(1)+","+Y(o.v).toFixed(1)).join(" ")}"/>`;
+  // trend (least squares on time in years)
+  let slope = null;
+  if (d.length >= 3 && t1 > t0) {
+    const n = d.length, xs = d.map(o=>(o.t-t0)/(365.25*864e5)), mx = xs.reduce((a,b)=>a+b)/n, my = d.reduce((a,o)=>a+o.v,0)/n;
+    let sxx=0, sxy=0; d.forEach((o,i)=>{ sxx+=(xs[i]-mx)**2; sxy+=(xs[i]-mx)*(o.v-my); });
+    if (sxx > 0) { slope = sxy/sxx; const b = my - slope*mx, ya = b, yb = b + slope*xs[n-1];
+      if ($("showTrend").checked) s += `<line x1="${X(t0)}" x2="${X(t1)}" y1="${Y(ya)}" y2="${Y(yb)}" stroke="${cTrend}" stroke-width="2" stroke-dasharray="6 4"/>`; }
+  }
+  d.forEach((o,i) => { const cx = X(o.t), cy = Y(o.v);
+    s += o.cens ? `<circle cx="${cx}" cy="${cy}" r="3.2" fill="${cBg}" stroke="${cSeries}" stroke-width="1.5"/>` : `<circle cx="${cx}" cy="${cy}" r="3" fill="${cSeries}"/>`; });
+  s += `<rect id="hit" x="${M.l}" y="${M.t}" width="${W-M.l-M.r}" height="${H-M.t-M.b}" fill="transparent"/><circle id="hl" r="6" fill="none" stroke="${cTrend}" stroke-width="2" style="display:none"/>`;
+  svg.innerHTML = s;
+  bindTip(d, X, Y, W, H, unit);
+  // stats
+  const vals = d.map(o=>o.v), mean = vals.reduce((a,b)=>a+b)/vals.length, last = d[d.length-1];
+  const cen = d.filter(o=>o.cens).length;
+  const st = [["Latest", (last.cens||"")+fmt(last.v)+" "+unit, fmtDate(last.t)],["Mean", fmt(mean), "all plotted"],["Min", fmt(Math.min(...vals)), ""],["Max", fmt(Math.max(...vals)), ""],
+    ["Trend", slope==null?"–":(slope>=0?"+":"")+fmt(slope)+" /yr", "least squares"],["Censored", cen+" of "+d.length, "below/above limit"]];
+  $("stats").innerHTML = st.map(([a,b,c]) => `<div class="stat"><span>${a}</span><b>${esc(b)}</b><span>${esc(c)}</span></div>`).join("");
+}
+function bindTip(d, X, Y, W, H, unit){
+  const svg = $("chart"), tip = $("tip"), hit = $("hit"), hl = $("hl"), box = $("chartWrap");
+  function move(ev){
+    const pt = svg.createSVGPoint(); pt.x = ev.clientX; pt.y = ev.clientY;
+    const p = pt.matrixTransform(svg.getScreenCTM().inverse());
+    let best = 0, bd = 1e18; d.forEach((o,i) => { const dx = X(o.t)-p.x; if (dx*dx < bd) { bd = dx*dx; best = i; } });
+    const o = d[best], cx = X(o.t), cy = Y(o.v);
+    hl.setAttribute("cx", cx); hl.setAttribute("cy", cy); hl.style.display = "";
+    tip.style.display = "block";
+    tip.textContent = fmtDate(o.t) + " · " + (o.cens||"") + fmt(o.v) + " " + unit;
+    const r = svg.getBoundingClientRect(), br = box.getBoundingClientRect(), sx = r.width/W;
+    let left = (cx*sx) - tip.offsetWidth/2; left = Math.max(0, Math.min(left, br.width - tip.offsetWidth));
+    tip.style.left = left + "px"; tip.style.top = Math.max(0, cy*sx - 38) + "px";
+  }
+  hit.addEventListener("pointermove", move); hit.addEventListener("pointerdown", move);
+  hit.addEventListener("pointerleave", () => { tip.style.display = "none"; hl.style.display = "none"; });
+}
+["range","showLine","showTrend"].forEach(id => $(id).addEventListener("change", () => state.obs.length && draw()));
+let rz; window.addEventListener("resize", () => { $("tip").style.display = "none"; clearTimeout(rz); rz = setTimeout(() => state.obs.length && draw(), 150); });
+matchMedia("(prefers-color-scheme:dark)").addEventListener("change", () => state.obs.length && draw());
+
+$("csvBtn").addEventListener("click", () => {
+  const { d, unit } = visible(); if (!d.length) return;
+  const q = v => '"' + String(v==null?"":v).replace(/"/g,'""') + '"';
+  const rows = [["sampling_point","point_name","determinand_code","determinand","datetime","qualifier","value","unit","raw_result"].join(",")]
+    .concat(d.map(o => [state.point.id, state.point.name, state.det.notation, state.det.label, new Date(o.t).toISOString(), o.cens||"", o.v, unit, o.raw].map(q).join(",")));
+  const url = URL.createObjectURL(new Blob([rows.join("\n")], {type:"text/csv"}));
+  const a = document.createElement("a"); a.href = url; a.download = state.point.id + "_" + state.det.notation + ".csv";
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+
+/* restore last point */
+try { const p = JSON.parse(localStorage.getItem("h2o.lastPoint")||"null"); if (p && p.id) { $("points").innerHTML = ""; setFindStatus("Last viewed:"); const li = document.createElement("li");
+  li.innerHTML = '<button type="button"><span class="name">'+esc(p.name)+'</span><span class="meta">'+esc(p.id)+'</span></button>'; li.firstChild.addEventListener("click", () => choosePoint(p)); $("points").appendChild(li); } } catch(e){}
+</script>
+</body>
+</html>
