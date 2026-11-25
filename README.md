@@ -1,5 +1,7 @@
 # H2O Water Quality
 
+Version 0.1 (major.minor, shown next to the title on the page).
+
 A small web page that plots how Environment Agency water quality measurements change over time at a sampling point in England.
 
 Live page: https://nimmo-smith-technologies.github.io/H2O-web/
@@ -11,7 +13,30 @@ Live page: https://nimmo-smith-technologies.github.io/H2O-web/
 3. **Choose a measurement.** A dropdown lists the measurements held for the chosen site, with a plain-English note on what each common one means. Each measurement is tagged "recent" (at least one result in the last 12 months) or "historical only". The list is saved on your device for 12 hours.
 4. **Read the plot.** Results are plotted over time with a least-squares trend line, summary statistics with units, and an option to exclude statistical outliers. Results can be downloaded as CSV.
 
+5. **See the limits.** For some measurements at river sites, the plot shades the region beyond a statutory standard (red) or a recommended value (yellow), with the sources explained below the plot.
+
 There is a light and dark theme switch at the top of the page.
+
+## Limits shown on the plot
+
+All values come from one source: [The Water Framework Directive (Standards and Classification) Directions (England and Wales) 2015](https://www.legislation.gov.uk/uksi/2015/1623/pdfs/uksiod_20151623_en_003.pdf), Schedule 3, read from the text as made. Later amendments, if any, have not been checked, and the values should be re-checked before anyone relies on them.
+
+| Measurement | Standard | Basis | Shown as |
+| --- | --- | --- | --- |
+| Oxygen saturation (%) | Good: 75% (river types 1, 2, 4, 6 and salmonid) or 60% (types 3, 5, 7) | 10th percentile | Statutory, two bands |
+| Ammonia as N (mg/l) | Good: 0.3 (types 1, 2, 4, 6) or 0.6 (types 3, 5, 7) | 90th percentile | Statutory, two bands |
+| pH | High or good: between 6 and 9 | 5th and 95th percentiles | Statutory |
+| Water temperature (°C) | Good: 23 (salmonid) or 28 (cyprinid) | Annual 98th percentile | Statutory, two bands |
+| Iron, dissolved (µg/l) | 1000 | Long-term mean | Statutory |
+| BOD (mg/l) | 4 (types 1, 2, 4, 6, salmonid) or 5 (types 3, 5, 7) | 90th percentile | Recommended, two bands |
+
+Notes:
+
+- **Statutory and recommended.** "Statutory" means a standard the Directions use to classify water bodies. "Recommended" is used for BOD, which the Directions publish but state must not be used to classify water bodies.
+- **Two bands.** River type depends on altitude and alkalinity, and temperature standards depend on salmonid or cyprinid status. The API does not provide these for a site, so the darker band marks results that fail every type and the lighter band results that fail only the stricter types.
+- **Not a breach test.** Each standard is judged on a statistic (a percentile or mean) over a classification period, so one result inside a shaded band does not by itself mean a breach. The Environment Agency and Natural Resources Wales make the official assessments.
+- **River sites only.** Limits are drawn only where the site type is "FRESHWATER - RIVERS" and the plotted unit matches the standard.
+- **Left out on purpose.** The river reactive phosphorus standard is calculated per site from its alkalinity and altitude, so it is not drawn. The Directions set no river standard for nitrate or nitrite, and their groundwater threshold values are for assessing groundwater bodies, not individual sites. Drinking-water limits apply to supplied water and are not used here.
 
 ## Add it to an iPhone home screen
 

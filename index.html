@@ -27,12 +27,12 @@
 :root{
   color-scheme:light;
   --bg:#f4f7f9; --card:#fff; --ink:#14232e; --muted:#5b6b78; --line:#d9e2e8;
-  --accent:#0b5c8a; --accent-ink:#fff; --warn:#a15c00; --err:#b3261e; --grid:#c9d5dc; --series:#0b5c8a; --trend:#c2410c; --out:#b0188f;
+  --accent:#0b5c8a; --accent-ink:#fff; --warn:#a15c00; --err:#b3261e; --grid:#c9d5dc; --series:#0b5c8a; --trend:#c2410c; --out:#b0188f; --lim-red:#d93025; --lim-yel:#e3a600;
 }
 :root[data-theme="dark"]{
   color-scheme:dark;
   --bg:#0e171d; --card:#16232c; --ink:#e7eef2; --muted:#9db0bd; --line:#2a3b47;
-  --accent:#4fb0e6; --accent-ink:#06202e; --warn:#f0b35a; --err:#ff8a80; --grid:#34495a; --series:#4fb0e6; --trend:#fb923c; --out:#f08ad8;
+  --accent:#4fb0e6; --accent-ink:#06202e; --warn:#f0b35a; --err:#ff8a80; --grid:#34495a; --series:#4fb0e6; --trend:#fb923c; --out:#f08ad8; --lim-red:#ff6b60; --lim-yel:#f5c542;
 }
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
@@ -41,6 +41,7 @@ body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 -apple-system
 main{max-width:760px;margin:0 auto;padding:16px 0 32px}
 .top{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:14px}
 h1{font-size:1.5rem;margin:8px 0 2px}
+.ver{font-size:.75rem;font-weight:600;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:1px 8px;vertical-align:middle;margin-left:6px}
 h2{font-size:1.05rem;margin:0 0 10px}
 .sub{color:var(--muted);margin:0;font-size:.92rem}
 .sub a{color:inherit;text-decoration:underline dotted;text-underline-offset:3px}
@@ -95,6 +96,14 @@ button:disabled,select:disabled{opacity:.55;cursor:default}
 .legend i.cen{background:var(--card);border-color:var(--series)}
 .legend b.xo{color:var(--out);margin-right:4px}
 .legend i.dash{width:16px;height:0;border-radius:0;border:0;border-top:2px dashed var(--trend);vertical-align:3px}
+.legend i.lim{width:14px;height:10px;border-radius:2px;border:1px solid}
+.limits{margin-top:12px;font-size:.84rem;color:var(--muted)}
+.limits h3{font-size:.9rem;color:var(--ink);margin:0 0 6px}
+.limits p{margin:0 0 8px}
+.limits .tag{display:inline-block;font-size:.72rem;font-weight:700;border-radius:999px;padding:1px 8px;margin-right:6px;color:#14232e}
+.limits .tag.statutory{background:var(--lim-red)}
+.limits .tag.recommended{background:var(--lim-yel)}
+.limits a{color:var(--accent)}
 .leaflet-popup-content-wrapper{background:var(--card);color:var(--ink)}
 .leaflet-popup-tip{background:var(--card)}
 .status{color:var(--muted);font-size:.9rem;margin:8px 0 0}
@@ -124,7 +133,7 @@ footer a{color:var(--accent)}
 <main>
   <header class="top">
     <div>
-      <h1>H2O Water Quality</h1>
+      <h1>H2O Water Quality <span class="ver" id="ver"></span></h1>
       <p class="sub"><a href="#data-source">Data plotter for Environment Agency measurements in England, UK</a></p>
     </div>
     <button type="button" id="themeSwitch" class="switch" role="switch" aria-checked="false" aria-label="Dark mode" title="Switch between light and dark">
@@ -206,6 +215,8 @@ footer a{color:var(--accent)}
     <p class="status" id="outNote"></p>
     <div id="chartWrap"><svg id="chart" role="img" aria-label="Time series chart"></svg><div id="tip"></div></div>
     <div class="legend" id="chartKey"><span><i class="res"></i>Result</span><span><i class="cen"></i>Censored result</span><span><b class="xo">✕</b>Outlier (excluded)</span><span><i class="dash"></i>Trend</span></div>
+    <div class="legend hidden" id="limitKey" style="margin-top:4px"></div>
+    <div class="limits" id="limits"></div>
     <div class="stats" id="stats"></div>
     <ul class="notes">
       <li><strong>Censored</strong> results are ones the laboratory could only report as below (&lt;) or above (&gt;) a limit. For example “&lt;0.5” means “less than 0.5”, usually because the amount was too small to measure precisely. They are drawn as hollow circles at the limit value. They are <strong>included</strong> in the line, mean, minimum, maximum and trend, taken at that limit value, so the trend can be biased when many results are censored.</li>
@@ -230,7 +241,9 @@ const API = "https://environment.data.gov.uk/water-quality";
 const HDR = { "Accept": "application/ld+json", "Accept-Crs": "http://www.opengis.net/def/crs/EPSG/0/4326" };
 const PAGE = 250;          // API maximum page size
 const CONCURRENCY = 4;
+const VERSION = "0.1";   // major.minor, shown next to the title
 const $ = id => document.getElementById(id);
+$("ver").textContent = "v" + VERSION;
 const state = { point:null, det:null, obs:[], token:0, fetchNote:"", fetchWarn:false };
 
 /* Plain-English notes for common measurements. Codes are Environment Agency determinand notations. */
@@ -863,6 +876,92 @@ function normalise(members){
   return out.sort((a,b)=>a.t-b.t);
 }
 
+/* ---------- limits shown on the plot ----------
+   Every value below was read from the primary text of:
+   The Water Framework Directive (Standards and Classification) Directions (England and Wales) 2015,
+   Schedule 3, Part 1 (physico-chemical standards for rivers) and Part 2 (specific pollutants), as made
+   (published with SI 2015/1623). Later amendments, if any, have not been checked.
+   Statutory = a standard the Directions use to classify water bodies. Recommended = a standard the Directions
+   publish but say must not be used for classifying water bodies. River type (altitude and alkalinity) and
+   salmonid or cyprinid status are not known here, so type-dependent standards are drawn as two bands. */
+const DIRECTIONS = { name:"The Water Framework Directive (Standards and Classification) Directions (England and Wales) 2015",
+                     url:"https://www.legislation.gov.uk/uksi/2015/1623/pdfs/uksiod_20151623_en_003.pdf" };
+const RIVER_TYPE = "FRESHWATER - RIVERS";
+const LIMITS = {
+  "9901": { kind:"statutory", tiered:true, unit:"%", name:"Dissolved oxygen (% saturation)", basis:"10th percentile", where:"Schedule 3, Part 1, Section 1, Table 1",
+    bands:[ {lo:-Infinity, hi:60, strong:true}, {lo:60, hi:75, strong:false} ],
+    text:"Good status needs the 10th percentile of dissolved oxygen to be at least 75% saturation in river types 1, 2, 4 and 6 and in salmonid rivers, and at least 60% in types 3, 5 and 7. River type depends on altitude and alkalinity, which this page does not have. The darker band is below 60%, which fails for every type. The lighter band is 60% to 75%, which fails only for the stricter types." },
+  "0111": { kind:"statutory", tiered:true, unit:"mg/l", name:"Total ammonia as nitrogen", basis:"90th percentile", where:"Schedule 3, Part 1, Section 1, Table 7",
+    bands:[ {lo:0.6, hi:Infinity, strong:true}, {lo:0.3, hi:0.6, strong:false} ],
+    text:"Good status needs the 90th percentile of total ammonia (as nitrogen) to be no more than 0.3 mg/l in river types 1, 2, 4 and 6, and no more than 0.6 mg/l in types 3, 5 and 7. River type depends on altitude and alkalinity, which this page does not have. The darker band is above 0.6 mg/l, which fails for every type. The lighter band is 0.3 to 0.6 mg/l, which fails only for the stricter types. This measurement is recorded as “Ammoniacal Nitrogen as N”." },
+  "0061": { kind:"statutory", tiered:false, unit:"PHUNITS", name:"pH", basis:"5th and 95th percentiles", where:"Schedule 3, Part 1, Section 1, Table 3",
+    bands:[ {lo:-Infinity, hi:6, strong:true}, {lo:9, hi:Infinity, strong:true} ],
+    text:"For high or good status in all river types, the 5th and 95th percentiles of pH must lie between 6 and 9. The shaded bands are below 6 and above 9." },
+  "0076": { kind:"statutory", tiered:true, unit:"CEL", name:"Water temperature", basis:"annual 98th percentile", where:"Schedule 3, Part 1, Section 1, Table 6",
+    bands:[ {lo:28, hi:Infinity, strong:true}, {lo:23, hi:28, strong:false} ],
+    text:"Good status needs the annual 98th percentile of river temperature to be no more than 23 °C in salmonid rivers and no more than 28 °C in cyprinid rivers. This page does not know which a river is. The darker band is above 28 °C, which fails for both. The lighter band is 23 to 28 °C, which fails for salmonid rivers only." },
+  "0419": { kind:"statutory", tiered:false, unit:"ug/l", name:"Iron, dissolved", basis:"long-term mean", where:"Schedule 3, Part 2, Table 1 (specific pollutants, fresh water)",
+    bands:[ {lo:1000, hi:Infinity, strong:true} ],
+    text:"The standard for iron in fresh water is a long-term mean dissolved concentration of 1000 µg/l (1 mg/l). The shaded band is above 1000 µg/l." },
+  "0085": { kind:"recommended", tiered:true, unit:"mg/l", name:"Biochemical oxygen demand (BOD)", basis:"90th percentile", where:"Schedule 3, Part 1, Section 1, Table 2",
+    bands:[ {lo:5, hi:Infinity, strong:true}, {lo:4, hi:5, strong:false} ],
+    text:"The Directions give 4 mg/l (river types 1, 2, 4, 6 and salmonid) and 5 mg/l (types 3, 5 and 7) as the 90th percentile for good status, but state that BOD must not be used in classifying the status of water bodies. It is therefore shown as a recommended value, not a statutory one. The darker band is above 5 mg/l and the lighter band is 4 to 5 mg/l." }
+};
+const NO_LIMIT = {
+  "0180": "A statutory standard for reactive phosphorus in rivers exists (Table 5 of the Directions), but it is calculated separately for each site from its alkalinity and altitude, which this page does not have. No limit is drawn.",
+  "9924": "The statutory dissolved oxygen standard for rivers is set as % saturation, not mg/l. Choose “Oxygen saturation (%)” to see it.",
+  "0117": "The Directions set no nitrate standard for rivers. Their nitrate values apply to groundwater bodies (not to individual sites) and to coastal and estuary waters.",
+  "0116": "The Directions set no standard for total oxidised nitrogen in rivers.",
+  "0118": "The Directions set no nitrite standard."
+};
+const isRiver = () => !!(state.point && state.point.type === RIVER_TYPE);
+function unitFactor(from, to){
+  const n = s => String(s||"").toLowerCase().replace("µ","u"), a = n(from), b = n(to);
+  if (a === b) return 1;
+  if (a === "ug/l" && b === "mg/l") return 0.001;
+  if (a === "mg/l" && b === "ug/l") return 1000;
+  return null;
+}
+function activeLimits(unit){
+  const L = state.det && LIMITS[state.det.notation];
+  if (!L || !isRiver()) return [];
+  const f = unitFactor(L.unit, unit); if (f == null) return [];
+  return [{ limit:L, bands:L.bands.map(b => ({ lo:b.lo*f, hi:b.hi*f, strong:b.strong })) }];
+}
+function el(tag, text, cls){ const e = document.createElement(tag); if (text != null) e.textContent = text; if (cls) e.className = cls; return e; }
+function renderLimitKey(shown){
+  const box = $("limitKey"); box.innerHTML = "";
+  shown.forEach(({L, b}) => {
+    const red = L.kind === "statutory", col = red ? "var(--lim-red)" : "var(--lim-yel)";
+    const sp = el("span"); const sw = el("i", null, "lim");
+    sw.style.background = "color-mix(in srgb, " + col + " " + (b.strong ? 34 : 16) + "%, transparent)"; sw.style.borderColor = col; sp.appendChild(sw);
+    sp.appendChild(document.createTextNode((red ? "Statutory standard" : "Recommended value") + (L.tiered ? (b.strong ? ": fails every river type" : ": fails the stricter types only") : ": not met")));
+    box.appendChild(sp);
+  });
+  box.classList.toggle("hidden", !shown.length);
+}
+function renderLimits(unit, shown){
+  const box = $("limits"); box.innerHTML = "";
+  const code = state.det && state.det.notation; if (!code) return;
+  box.appendChild(el("h3", "Limits and sources"));
+  const L = LIMITS[code], pu = prettyUnit(unit);
+  if (L) {
+    const p = el("p"); p.appendChild(el("span", L.kind === "statutory" ? "Statutory standard" : "Recommended value", "tag " + L.kind));
+    p.appendChild(el("strong", L.name)); p.appendChild(document.createTextNode(" · " + L.basis)); box.appendChild(p);
+    box.appendChild(el("p", L.text));
+    if (!isRiver()) box.appendChild(el("p", "No shading is drawn because this site is of type “" + ((state.point && state.point.type) || "unknown") + "”. These standards apply to rivers (site type “" + RIVER_TYPE + "”)."));
+    else if (unitFactor(L.unit, unit) == null) box.appendChild(el("p", "No shading is drawn because these results are in " + (pu || "an unknown unit") + ", and the standard is in " + prettyUnit(L.unit) + "."));
+    else if (!shown.length) box.appendChild(el("p", "No shaded band falls inside the range of the plotted results."));
+    const src = el("p", "Source: "); const a = el("a", DIRECTIONS.name); a.href = DIRECTIONS.url; a.target = "_blank"; a.rel = "noopener";
+    src.appendChild(a); src.appendChild(document.createTextNode(", " + L.where + ".")); box.appendChild(src);
+  } else if (NO_LIMIT[code]) {
+    box.appendChild(el("p", NO_LIMIT[code]));
+  } else {
+    box.appendChild(el("p", "No limit has been added for this measurement yet. That does not mean none exists."));
+  }
+  box.appendChild(el("p", "How to read the shading: red marks values beyond a statutory standard and yellow marks values beyond a recommended value. A single result inside a shaded band does not by itself mean a breach, because each standard is assessed on the statistic named above (for example the 90th percentile) over a classification period. The Environment Agency and Natural Resources Wales make the official assessments. This is a visual guide, not legal advice. Values were read from the Directions as made in 2015 and checked on 25 November 2026. Later amendments, if any, have not been checked."));
+}
+
 /* ---------- chart ---------- */
 function visible(){
   const yrs = $("range").value; let d = state.obs;
@@ -923,7 +1022,7 @@ function draw(){
   const { d, unit, dropped } = visible();
   const pu = prettyUnit(unit);
   svg.innerHTML = ""; $("stats").innerHTML = ""; cs.className = "status"; $("outNote").textContent = "";
-  if (!d.length) { cs.textContent = "No data in this period."; return; }
+  if (!d.length) { cs.textContent = "No data in this period."; $("limitKey").classList.add("hidden"); $("limits").innerHTML = ""; return; }
   cs.textContent = d.length + " observations, " + fmtDate(d[0].t) + " to " + fmtDate(d[d.length-1].t) + (dropped ? " ("+dropped+" in other units hidden)" : "") + ". " + state.fetchNote + (state.fetchWarn ? ". Some results are missing: try again." : ".");
   if (state.fetchWarn) cs.className = "status warn";
 
@@ -952,6 +1051,14 @@ function draw(){
   const cSeries = css("--series"), cTrend = css("--trend"), cGrid = css("--grid"), cBg = css("--card"), cOut = css("--out");
   const dash = 'stroke-dasharray="3 4"';
   let s = "";
+  const limShown = [];
+  activeLimits(unit).forEach(A => A.bands.forEach(b => {
+    const top = Math.min(b.hi, hi), bot = Math.max(b.lo, lo); if (!(top > bot)) return;
+    const col = css(A.limit.kind === "statutory" ? "--lim-red" : "--lim-yel");
+    s += `<rect x="${M.l}" y="${Y(top)}" width="${W-M.l-M.r}" height="${Y(bot)-Y(top)}" fill="${col}" fill-opacity="${b.strong?.34:.16}"/>`;
+    [b.lo, b.hi].forEach(v => { if (isFinite(v) && v > lo && v < hi) s += `<line x1="${M.l}" x2="${W-M.r}" y1="${Y(v)}" y2="${Y(v)}" stroke="${col}" stroke-width="1.5" stroke-opacity=".8"/>`; });
+    limShown.push({ L:A.limit, b });
+  }));
   yt.forEach(v => { const y = Y(v); s += `<line x1="${M.l}" x2="${W-M.r}" y1="${y}" y2="${y}" stroke="${cGrid}" ${dash}/><text x="${M.l-6}" y="${y+4}" text-anchor="end">${fmt(v)}</text>`; });
   let lastLabelX = -1e9;
   timeTicks(t0, t1, W-M.l-M.r).forEach(k => {
@@ -974,6 +1081,7 @@ function draw(){
     else s += o.cens ? `<circle cx="${cx}" cy="${cy}" r="3.2" fill="${cBg}" stroke="${cSeries}" stroke-width="1.5"/>` : `<circle cx="${cx}" cy="${cy}" r="3" fill="${cSeries}"/>`; });
   s += `<rect id="hit" x="${M.l}" y="${M.t}" width="${W-M.l-M.r}" height="${H-M.t-M.b}" fill="transparent"/><circle id="hl" r="6" fill="none" stroke="${cTrend}" stroke-width="2" style="display:none"/>`;
   svg.innerHTML = s;
+  renderLimitKey(limShown); renderLimits(unit, limShown);
   bindTip(d, X, Y, W, pu);
 
   // statistics (outliers excluded when ticked)
