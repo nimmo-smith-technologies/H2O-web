@@ -196,6 +196,7 @@ footer a{color:var(--accent)}
     <div class="status" id="pointMeta"></div>
     <label class="lbl" for="detSel">Measurement</label>
     <select id="detSel" disabled><option value="">Checking which measurements exist…</option></select>
+    <div class="bar hidden" id="detBarWrap"><i id="detBar"></i></div>
     <div class="info hidden" id="detInfo">
       <strong id="detInfoName"></strong>
       <p id="detInfoText"></p>
@@ -728,6 +729,8 @@ async function choosePoint(p){
   $("detInfo").classList.add("hidden"); $("detRetry").classList.add("hidden"); $("detStatus").className = "status"; $("detStatus").textContent = "";
   $("detCard").scrollIntoView({behavior:"smooth", block:"start"});
   const token = ++state.token;
+  $("detBar").style.width = "3%"; $("detBarWrap").classList.remove("hidden");
+  $("detStatus").textContent = "Checking which measurements exist…";
   await withHold(async () => {
     try { await loadMeasurements(p, token); }
     catch(e){
@@ -736,6 +739,7 @@ async function choosePoint(p){
       $("detStatus").className = "status error"; $("detStatus").textContent = "Could not load the measurements for this site: " + (e.message || e) + ".";
       $("detRetry").classList.remove("hidden");
     }
+    finally { if (token === state.token) { $("detBar").style.width = "100%"; $("detBarWrap").classList.add("hidden"); } }
   });
 }
 $("detRetry").addEventListener("click", () => state.point && choosePoint(state.point));
@@ -760,22 +764,24 @@ function measCachePut(id, o){
     localStorage.setItem("h2o.measIdx", JSON.stringify(idx));
   } catch(e){}
 }
-async function countFor(path, codes, from){
+async function countFor(path, codes, from, tick){
   if (!codes.length) return 0;
-  return (await retry(() => api(path, { determinand:codes.join(","), dateFrom:from, limit:1 }), 2)).totalItems || 0;
+  const n = (await retry(() => api(path, { determinand:codes.join(","), dateFrom:from, limit:1 }), 2)).totalItems || 0;
+  if (tick) tick();
+  return n;
 }
 /* Which of these codes have results (from a date, if given)? Counts add up, so test one half and subtract for the other. */
-async function findPresent(path, codes, total, from, budget){
+async function findPresent(path, codes, total, from, budget, tick){
   if (!total) return { yes:[], unk:[] };
   if (codes.length === 1) return { yes:codes, unk:[] };
   if (budget.left <= 0) return { yes:[], unk:codes };
   budget.left--;
   const h = Math.ceil(codes.length/2), A = codes.slice(0,h), B = codes.slice(h);
-  const tA = await countFor(path, A, from);
-  const [ra, rb] = await Promise.all([ findPresent(path, A, tA, from, budget), findPresent(path, B, total - tA, from, budget) ]);
+  const tA = await countFor(path, A, from, tick);
+  const [ra, rb] = await Promise.all([ findPresent(path, A, tA, from, budget, tick), findPresent(path, B, total - tA, from, budget, tick) ]);
   return { yes:ra.yes.concat(rb.yes), unk:ra.unk.concat(rb.unk) };
 }
-async function discover(p){
+async function discover(p, onProgress){
   const path = "/sampling-point/"+encodeURIComponent(p.id)+"/observation", cutoff = recentCutoff();
   const fresh = p.stat && p.stat.ok && p.stat.at && Date.now() - p.stat.at < 600000;
   let total, recent;
@@ -789,7 +795,9 @@ async function discover(p){
   const nPages = Math.min(4, Math.max(1, Math.ceil(recent/PAGE)));
   const skips = new Set([0]);                       // earliest page: older measurements
   for (let k = 0; k < nPages; k++) skips.add(Math.max(0, total - PAGE*(k+1)));   // latest pages, walking back
-  const pages = await Promise.all([...skips].map(s => retry(() => api(path, { limit:PAGE, skip:s }), 2)));
+  let pagesDone = 0; const nPagesToGet = skips.size;
+  if (onProgress) onProgress(0, nPagesToGet);
+  const pages = await Promise.all([...skips].map(s => retry(() => api(path, { limit:PAGE, skip:s }), 2).then(r => { pagesDone++; if (onProgress) onProgress(pagesDone, nPagesToGet); return r; })));
   pages.forEach(pg => (pg.member||[]).forEach(m => {
     const o = m.observedProperty; if (!o || !o.notation) return;
     if (!found.has(o.notation)) found.set(o.notation, o.prefLabel || o.notation);
@@ -801,14 +809,24 @@ async function discover(p){
 async function loadMeasurements(p, token){
   const sel = $("detSel"), path = "/sampling-point/"+encodeURIComponent(p.id)+"/observation", cutoff = recentCutoff();
   const reasons = new Set();
+  // Stage-weighted progress: reading results 0-60%, built-in measurements 60-80%, recency 80-100%.
+  const prog = (from, to, frac, text) => {
+    if (token !== state.token) return;
+    $("detBar").style.width = (100 * (from + (to - from) * Math.min(1, frac))) + "%";
+    if (text) { $("detStatus").className = "status"; $("detStatus").textContent = text; }
+  };
+  const ticker = (from, to, text) => { let n = 0; return () => { n++; prog(from, to, n/(n+2), text); }; };   // unknown request count: approach the end gradually
   let data = measCacheGet(p.id), fromCache = !!data, partial = false;
   if (!data) {
     let found = new Map(), R = new Set(), covered = false, discFailed = false, verifyFailed = false;
-    try { ({ found, R, covered } = await discover(p)); } catch(e){ discFailed = true; reasons.add(reasonOf(e)); }
+    prog(0, .6, .05, "Reading this site’s results…");
+    try { ({ found, R, covered } = await discover(p, (d, n) => prog(0, .6, d/n, "Reading this site’s results (" + d + " of " + n + " pages)…"))); } catch(e){ discFailed = true; reasons.add(reasonOf(e)); }
     if (token !== state.token) return;
     const present = new Set(DETS.filter(d => found.has(d.c)).map(d => d.c));
     const absent = DETS.map(d => d.c).filter(c => !present.has(c));
-    try { (await findPresent(path, absent, await countFor(path, absent), undefined, { left:60 })).yes.forEach(c => present.add(c)); } catch(e){ verifyFailed = true; reasons.add(reasonOf(e)); }
+    prog(.6, .8, 0, "Checking the built-in measurements…");
+    const tick1 = ticker(.6, .8, "Checking the built-in measurements…");
+    try { (await findPresent(path, absent, await countFor(path, absent, undefined, tick1), undefined, { left:60 }, tick1)).yes.forEach(c => present.add(c)); } catch(e){ verifyFailed = true; reasons.add(reasonOf(e)); }
     if (token !== state.token) return;
     if (discFailed && verifyFailed) throw new Error("the Environment Agency service did not respond [" + [...reasons].join(", ") + "]");
     // recent or historical
@@ -817,7 +835,9 @@ async function loadMeasurements(p, token){
     let unknown = [];
     if (discFailed) unknown = U;
     else if (!covered && U.length) {
-      try { const r = await findPresent(path, U, await countFor(path, U, cutoff), cutoff, { left:10 }); r.yes.forEach(c => recentSet.add(c)); unknown = r.unk; }
+      prog(.8, 1, 0, "Checking which measurements are recent…");
+      const tick2 = ticker(.8, 1, "Checking which measurements are recent…");
+      try { const r = await findPresent(path, U, await countFor(path, U, cutoff, tick2), cutoff, { left:10 }, tick2); r.yes.forEach(c => recentSet.add(c)); unknown = r.unk; }
       catch(e){ unknown = U; verifyFailed = true; reasons.add(reasonOf(e)); }
     }
     if (token !== state.token) return;
