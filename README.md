@@ -8,7 +8,7 @@ Live page: https://nimmo-smith-technologies.github.io/H2O-web/
 
 1. **Find a location.** Enter a postcode or a site name, press the target button to use your current position, or pan and zoom the map and tap it. Press Search to list the sampling points within 1, 3, 5, 10 or 25 km.
 2. **Check each site.** The list shows, for each site, the number of results on record, the first and latest month with results, and how many results fall in the last 12 months. A tick box hides sites with no results in the last 12 months. The map shows the same sites around the search location and radius.
-3. **Choose a measurement.** A dropdown lists the measurements held for the chosen site, with a plain-English note on what each common one means. The list is saved on your device for 12 hours.
+3. **Choose a measurement.** A dropdown lists the measurements held for the chosen site, with a plain-English note on what each common one means. Each measurement is tagged "recent" (at least one result in the last 12 months) or "historical only". The list is saved on your device for 12 hours.
 4. **Read the plot.** Results are plotted over time with a least-squares trend line, summary statistics with units, and an option to exclude statistical outliers. Results can be downloaded as CSV.
 
 There is a light and dark theme switch at the top of the page.
@@ -45,7 +45,7 @@ Notes from working with the API:
 - A result such as `<0.5` has no numeric value, only an upper bound. The page calls these censored results.
 - Several determinand codes can go in one request as a comma-separated list, and the counts add up. The page uses this to test many measurements at once.
 - Site statistics (count, first and latest date, results in the last 12 months) take three small requests per site, so the nearest 60 sites are checked automatically and more on request. A search loads at most 2,000 sampling points. Statistics are kept for the session so repeat searches do not ask again.
-- To list a site's measurements the page reads its earliest and latest 250 results (2 requests) and notes every measurement seen. It then tests the built-in measurements not seen there, a group at a time, splitting a group only while results remain. A busy site typically needs about 3 requests. The result matched an exhaustive one-request-per-measurement check at the two sites tested. "Other measurements" come from the earliest and latest 250 results only, so rarely measured ones may be missing.
+- To list a site's measurements and tag them recent or historical, the page reads the site's earliest 250 results and its latest results (enough pages to reach back 12 months, up to 4) and notes every measurement seen and whether it was seen in the last 12 months. It then tests the built-in measurements not seen, a group at a time, splitting a group only while results remain. For a very busy site whose latest 1,000 results do not reach back 12 months, it also tests the not-yet-seen measurements for recent results, within a budget of 10 requests, and leaves any it cannot resolve untagged. A small site needs 2 to 3 requests, a busy one about 13. At the sites tested, every tag matched a one-request-per-measurement check against the API. "Other measurements" come from the earliest and latest results only, so rarely measured ones may be missing.
 
 ### Request handling
 

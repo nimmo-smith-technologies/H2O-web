@@ -68,6 +68,7 @@ button:disabled,select:disabled{opacity:.55;cursor:default}
 .switch .knob svg{width:16px;height:16px;position:absolute;top:6px;left:6px;stroke:var(--accent-ink);fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 .hint{color:var(--muted);font-size:.85rem;margin:8px 0 0}
 .lbl{display:block;font-size:.85rem;color:var(--muted);margin:10px 0 4px}
+#detSel{scroll-margin-top:48px}
 .key{background:var(--bg);border-radius:10px;padding:8px 10px;font-size:.82rem;color:var(--muted);margin-top:10px}
 .key dl{margin:4px 0 0;display:grid;grid-template-columns:auto 1fr;gap:2px 10px}
 .key dt{font-weight:600;color:var(--ink)}
@@ -181,6 +182,7 @@ footer a{color:var(--accent)}
     <div class="info hidden" id="detInfo">
       <strong id="detInfoName"></strong>
       <p id="detInfoText"></p>
+      <p id="detInfoRecency" style="font-weight:600"></p>
       <p><small>Plain-English guide only. It is not a regulatory limit or health advice.</small></p>
     </div>
     <p class="status" id="detStatus" role="status"></p>
@@ -213,7 +215,7 @@ footer a{color:var(--accent)}
   </section>
 
   <footer>
-    <p>Copyright © 2026 Nimmo Smith Technologies Limited. The H2O Water Quality code is licensed under the <a href="https://www.gnu.org/licenses/gpl-3.0.html" target="_blank" rel="noopener">GNU General Public License v3.0</a>. The data it displays belong to the Environment Agency and are licensed separately, as below.</p>
+    <p>Copyright © 2026 Nimmo Smith Technologies Limited. The H2O Water Quality <a href="https://github.com/nimmo-smith-technologies/H2O-web" target="_blank" rel="noopener">code</a> is licensed under the <a href="https://www.gnu.org/licenses/gpl-3.0.html" target="_blank" rel="noopener">GNU General Public License v3.0</a>. The data it displays belong to the Environment Agency and are licensed separately, as below.</p>
     <p id="data-source">Data: Environment Agency <a href="https://environment.data.gov.uk/dataset/8034d47a-ba8a-4978-aca0-bd5d6e870536" target="_blank" rel="noopener">Water Quality Explorer</a>.
     © Environment Agency copyright and/or database right 2025. All rights reserved. Contains public sector information licensed under the
     <a href="https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/" target="_blank" rel="noopener">Open Government Licence v3.0</a>.
@@ -467,7 +469,7 @@ async function getStats(id){
       first = all.member[0].phenomenonTime;
       last = total === 1 ? first : (await retry(() => api(path, { limit:1, skip:total-1 }, true), 1)).member[0].phenomenonTime;
     }
-    const res = { ok:true, total, first, last, recent:recent.totalItems || 0 };
+    const res = { ok:true, total, first, last, recent:recent.totalItems || 0, at:Date.now() };
     statCache.set(id, res); return res;
   } catch(e){ return { ok:false, reason:reasonOf(e) }; }
 }
@@ -675,76 +677,108 @@ async function choosePoint(p){
 }
 $("detRetry").addEventListener("click", () => state.point && choosePoint(state.point));
 
-/* Which measurements does this site have?
-   1. Read the site's earliest and latest 250 results (2 requests) and note every measurement seen.
-   2. For the built-in measurements not seen there, ask for several codes at once and split the group
-      in half only while results remain (a handful of requests, often just one).
+/* Which measurements does this site have, and are they recent?
+   1. Read the site's earliest page of results and its latest pages (enough to cover the last 12 months, up to 4 pages)
+      and note every measurement seen. A measurement seen in the last 12 months is "recent".
+   2. For the built-in measurements not seen, ask for several codes at once and split the group in half only while results remain.
+   3. If the latest pages did not reach back 12 months, test the measurements not yet seen as recent the same way,
+      within a small request budget. Any left unresolved are shown without a tag.
    The answer is kept on this device for 12 hours. */
-const MEAS_TTL = 12*3600e3;
+const MEAS_TTL = 12*3600e3, MEAS_V = 2;
 function measCacheGet(id){
-  try { const o = JSON.parse(localStorage.getItem("h2o.meas." + id) || "null"); if (o && Date.now() - o.t < MEAS_TTL) return o; } catch(e){}
+  try { const o = JSON.parse(localStorage.getItem("h2o.meas." + id) || "null"); if (o && o.v === MEAS_V && Date.now() - o.t < MEAS_TTL && Array.isArray(o.recent)) return o; } catch(e){}
   return null;
 }
 function measCachePut(id, o){
   try {
-    localStorage.setItem("h2o.meas." + id, JSON.stringify({ t:Date.now(), curated:o.curated, others:o.others }));
+    localStorage.setItem("h2o.meas." + id, JSON.stringify({ v:MEAS_V, t:Date.now(), curated:o.curated, others:o.others, recent:o.recent, unknown:o.unknown }));
     let idx = JSON.parse(localStorage.getItem("h2o.measIdx") || "[]").filter(x => x !== id); idx.push(id);
     while (idx.length > 25) localStorage.removeItem("h2o.meas." + idx.shift());
     localStorage.setItem("h2o.measIdx", JSON.stringify(idx));
   } catch(e){}
 }
-async function countFor(path, codes){
+async function countFor(path, codes, from){
   if (!codes.length) return 0;
-  return (await retry(() => api(path, { determinand:codes.join(","), limit:1 }), 2)).totalItems || 0;
+  return (await retry(() => api(path, { determinand:codes.join(","), dateFrom:from, limit:1 }), 2)).totalItems || 0;
 }
-async function findPresent(path, codes, total){
-  if (!total) return [];
-  if (codes.length === 1) return codes;
+/* Which of these codes have results (from a date, if given)? Counts add up, so test one half and subtract for the other. */
+async function findPresent(path, codes, total, from, budget){
+  if (!total) return { yes:[], unk:[] };
+  if (codes.length === 1) return { yes:codes, unk:[] };
+  if (budget.left <= 0) return { yes:[], unk:codes };
+  budget.left--;
   const h = Math.ceil(codes.length/2), A = codes.slice(0,h), B = codes.slice(h);
-  const tA = await countFor(path, A);
-  const [ra, rb] = await Promise.all([ findPresent(path, A, tA), findPresent(path, B, total - tA) ]);
-  return ra.concat(rb);
+  const tA = await countFor(path, A, from);
+  const [ra, rb] = await Promise.all([ findPresent(path, A, tA, from, budget), findPresent(path, B, total - tA, from, budget) ]);
+  return { yes:ra.yes.concat(rb.yes), unk:ra.unk.concat(rb.unk) };
 }
-/* Measurements seen in the earliest and latest page of this site's results. Returns Map(code -> label). */
 async function discover(p){
-  const path = "/sampling-point/"+encodeURIComponent(p.id)+"/observation";
-  let total = p.stat && p.stat.ok ? p.stat.total : null;
-  if (total == null) total = (await retry(() => api(path, { limit:1 }), 2)).totalItems || 0;
-  const seen = new Map(); if (!total) return seen;
-  const skips = total > PAGE ? [0, total - PAGE] : [0];
-  const pages = await Promise.all(skips.map(s => retry(() => api(path, { limit:PAGE, skip:s }), 2)));
-  pages.forEach(pg => (pg.member||[]).forEach(m => { const o = m.observedProperty; if (o && o.notation && !seen.has(o.notation)) seen.set(o.notation, o.prefLabel || o.notation); }));
-  return seen;
+  const path = "/sampling-point/"+encodeURIComponent(p.id)+"/observation", cutoff = recentCutoff();
+  const fresh = p.stat && p.stat.ok && p.stat.at && Date.now() - p.stat.at < 600000;
+  let total, recent;
+  if (fresh) { total = p.stat.total; recent = p.stat.recent; }
+  else {
+    total = (await retry(() => api(path, { limit:1 }), 2)).totalItems || 0;
+    recent = total ? (await retry(() => api(path, { dateFrom:cutoff, limit:1 }), 2)).totalItems || 0 : 0;
+  }
+  const found = new Map(), R = new Set();
+  if (!total) return { found, R, covered:true };
+  const nPages = Math.min(4, Math.max(1, Math.ceil(recent/PAGE)));
+  const skips = new Set([0]);                       // earliest page: older measurements
+  for (let k = 0; k < nPages; k++) skips.add(Math.max(0, total - PAGE*(k+1)));   // latest pages, walking back
+  const pages = await Promise.all([...skips].map(s => retry(() => api(path, { limit:PAGE, skip:s }), 2)));
+  pages.forEach(pg => (pg.member||[]).forEach(m => {
+    const o = m.observedProperty; if (!o || !o.notation) return;
+    if (!found.has(o.notation)) found.set(o.notation, o.prefLabel || o.notation);
+    if (String(m.phenomenonTime) >= cutoff) R.add(o.notation);
+  }));
+  return { found, R, covered: recent <= PAGE*nPages };
 }
 
 async function loadMeasurements(p, token){
-  const sel = $("detSel"), path = "/sampling-point/"+encodeURIComponent(p.id)+"/observation";
+  const sel = $("detSel"), path = "/sampling-point/"+encodeURIComponent(p.id)+"/observation", cutoff = recentCutoff();
   const reasons = new Set();
   let data = measCacheGet(p.id), fromCache = !!data, partial = false;
   if (!data) {
-    let found = new Map(), discFailed = false, verifyFailed = false;
-    try { found = await discover(p); } catch(e){ discFailed = true; reasons.add(reasonOf(e)); }
+    let found = new Map(), R = new Set(), covered = false, discFailed = false, verifyFailed = false;
+    try { ({ found, R, covered } = await discover(p)); } catch(e){ discFailed = true; reasons.add(reasonOf(e)); }
     if (token !== state.token) return;
     const present = new Set(DETS.filter(d => found.has(d.c)).map(d => d.c));
     const absent = DETS.map(d => d.c).filter(c => !present.has(c));
-    try { (await findPresent(path, absent, await countFor(path, absent))).forEach(c => present.add(c)); } catch(e){ verifyFailed = true; reasons.add(reasonOf(e)); }
+    try { (await findPresent(path, absent, await countFor(path, absent), undefined, { left:60 })).yes.forEach(c => present.add(c)); } catch(e){ verifyFailed = true; reasons.add(reasonOf(e)); }
     if (token !== state.token) return;
     if (discFailed && verifyFailed) throw new Error("the Environment Agency service did not respond [" + [...reasons].join(", ") + "]");
+    // recent or historical
+    const recentSet = new Set(R), cand = new Set([...present, ...found.keys()]);
+    const U = [...cand].filter(c => !R.has(c));
+    let unknown = [];
+    if (discFailed) unknown = U;
+    else if (!covered && U.length) {
+      try { const r = await findPresent(path, U, await countFor(path, U, cutoff), cutoff, { left:10 }); r.yes.forEach(c => recentSet.add(c)); unknown = r.unk; }
+      catch(e){ unknown = U; verifyFailed = true; reasons.add(reasonOf(e)); }
+    }
+    if (token !== state.token) return;
     partial = discFailed || verifyFailed;
-    data = { curated:[...present], others:[...found].filter(([c]) => !DET_BY.has(c)).map(([c,l]) => ({c,l})).sort((a,b) => a.l.localeCompare(b.l)) };
+    data = { curated:[...present], recent:[...recentSet], unknown,
+             others:[...found].filter(([c]) => !DET_BY.has(c)).map(([c,l]) => ({c,l})).sort((a,b) => a.l.localeCompare(b.l)) };
     if (!partial) measCachePut(p.id, data);
   }
+  const recent = new Set(data.recent), unk = new Set(data.unknown);
+  const tag = c => recent.has(c) ? " · recent" : unk.has(c) ? "" : " · historical only";
+  state.recency = new Map([...data.curated, ...data.others.map(o => o.c)].map(c => [c, recent.has(c) ? "recent" : unk.has(c) ? "unknown" : "historical"]));
   sel.innerHTML = '<option value="">Choose a measurement…</option>';
   const have = new Set(data.curated), groups = new Map();
   DETS.forEach(d => { if (have.has(d.c)) { if (!groups.has(d.g)) groups.set(d.g, []); groups.get(d.g).push(d); } });
   groups.forEach((items, g) => {
     const og = document.createElement("optgroup"); og.label = g;
-    items.forEach(d => { const o = document.createElement("option"); o.value = d.c; o.textContent = d.l; og.appendChild(o); });
+    items.forEach(d => { const o = document.createElement("option"); o.value = d.c; o.textContent = d.l + tag(d.c); og.appendChild(o); });
     sel.appendChild(og);
   });
   if (data.others.length) {
     const og = document.createElement("optgroup"); og.label = "Other measurements at this site";
-    data.others.forEach(o => { const op = document.createElement("option"); op.value = o.c; op.textContent = o.l; op.dataset.other = "1"; og.appendChild(op); });
+    const rank = c => recent.has(c) ? 0 : unk.has(c) ? 1 : 2;      // recent first, then untagged, then historical only
+    [...data.others].sort((a,b) => rank(a.c) - rank(b.c) || a.l.localeCompare(b.l)).forEach(o => {
+      const op = document.createElement("option"); op.value = o.c; op.textContent = o.l + tag(o.c); op.dataset.other = "1"; og.appendChild(op); });
     sel.appendChild(og);
   }
   sel.disabled = false;
@@ -752,7 +786,9 @@ async function loadMeasurements(p, token){
   $("detStatus").className = partial ? "status warn" : "status";
   $("detStatus").textContent = !any ? (partial ? "" : "No measurements found at this site.") :
     (have.size ? "" : "This site has none of the common water-quality measurements, so only its own measurements are listed. ") +
-    "“Other measurements” are found from the earliest and latest 250 results at this site, so rarely measured ones may be missing." +
+    "“Recent” means at least one result in the last 12 months; “historical only” means none. " +
+    (data.unknown.length ? data.unknown.length + " measurement" + (data.unknown.length===1?"":"s") + " could not be checked for recency and carry no tag. " : "") +
+    "“Other measurements” are found from the earliest and latest results at this site, so rarely measured ones may be missing." +
     (fromCache ? " This list was saved on this device in the last 12 hours." : "") +
     (partial ? " Note: some checks failed (" + [...reasons].join(", ") + "), so the list may be incomplete." : "");
   $("detRetry").classList.toggle("hidden", !partial);
@@ -764,6 +800,8 @@ $("detSel").addEventListener("change", () => {
   const label = known ? known.l : sel.options[sel.selectedIndex].textContent;
   $("detInfoName").textContent = label;
   $("detInfoText").textContent = known ? known.d : GENERIC_DESC;
+  const rc = state.recency && state.recency.get(code);
+  $("detInfoRecency").textContent = rc === "recent" ? "At this site: results in the last 12 months." : rc === "historical" ? "At this site: historical only, no results in the last 12 months." : "";
   $("detInfo").classList.remove("hidden");
   chooseDet(code, label);
 });
@@ -776,7 +814,7 @@ async function chooseDetInner(notation, label){
   $("chartCard").classList.remove("hidden");
   $("chartSub").textContent = label + " · " + state.point.name;
   $("stats").innerHTML = ""; $("chart").innerHTML = ""; $("outNote").textContent = "";
-  $("chartCard").scrollIntoView({behavior:"smooth", block:"start"});
+  $("detSel").scrollIntoView({behavior:"smooth", block:"start"});   // dropdown at the top, plot beneath it
   const path = "/sampling-point/"+encodeURIComponent(state.point.id)+"/observation";
   const bar = $("bar"), wrap = $("barWrap"); wrap.classList.remove("hidden"); bar.style.width = "0";
   const cs = $("chartStatus"); cs.className = "status"; cs.textContent = "Fetching observations…";
