@@ -178,6 +178,7 @@ footer a{color:var(--accent)}
       <p><small>Plain-English guide only. It is not a regulatory limit or health advice.</small></p>
     </div>
     <p class="status" id="detStatus" role="status"></p>
+    <button type="button" id="detRetry" class="hidden" style="margin-top:6px">Try again</button>
   </section>
 
   <section class="card hidden" id="chartCard">
@@ -262,13 +263,21 @@ const DET_BY = new Map(DETS.map(x => [x.c, x]));
 const GENERIC_DESC = "No plain-English summary is built in for this measurement yet. The official name is shown above.";
 
 /* ---------- helpers ---------- */
-async function api(path, params, signal){
+async function api(path, params){
   const url = new URL(API + path);
   for (const [k,v] of Object.entries(params||{})) if (v!==undefined && v!=="") url.searchParams.set(k,v);
-  const r = await fetch(url, { headers: HDR, signal });
-  if (!r.ok) throw new Error("API " + r.status + " for " + path);
-  return r.json();
+  const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 25000);   // never wait forever
+  try {
+    const r = await fetch(url, { headers: HDR, signal: ctl.signal });
+    if (!r.ok) throw new Error("API " + r.status + " for " + path);
+    return await r.json();
+  } catch(e){ throw e.name === "AbortError" ? new Error("The Environment Agency service timed out") : e; }
+  finally { clearTimeout(timer); }
 }
+/* While the user is loading a site or its data, background site checks pause so those requests go first. */
+const hold = { n:0 };
+async function withHold(fn){ hold.n++; try { return await fn(); } finally { hold.n--; if (!hold.n) scheduleRender(); } }
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 async function retry(fn, n=2){ for (let i=0;;i++){ try { return await fn(); } catch(e){ if (i>=n) throw e; await new Promise(r=>setTimeout(r,500*(i+1))); } } }
 async function mapLimit(items, limit, fn){
   const out = new Array(items.length); let i = 0;
@@ -396,7 +405,7 @@ async function runSearch(params, origin, radiusKm, desc, label){
   if (origin) pts.sort((a,b) => (a.dist??1e9) - (b.dist??1e9));
   pts.forEach((p,i) => p.idx = i);
   Object.assign(search, { origin, radius:radiusKm, label, pts, total, desc, shown:SHOW_STEP, next:0, limit:Math.min(CHECK_FIRST, pts.length), running:false });
-  $("points").innerHTML = "";
+  $("points").innerHTML = ""; rowEls.clear();
   $("listKey").classList.toggle("hidden", !pts.length);
   drawMap();
   if (!pts.length) { setFindStatus("No sampling points found " + desc + "."); renderList(); return; }
@@ -425,6 +434,7 @@ async function pumpStats(token){
   search.running = true;
   await Promise.all(Array.from({length:STAT_CONCURRENCY}, async () => {
     while (token === search.token && search.next < search.limit) {
+      if (hold.n > 0) { await sleep(250); continue; }
       const p = search.pts[search.next++];
       if (p.stat) continue;
       p.stat = await getStats(p.id);
@@ -463,38 +473,49 @@ function updateStatus(){
   $("checkBar").style.width = search.limit ? (100*Math.min(done,search.limit)/search.limit)+"%" : "0";
   $("checkBarWrap").classList.toggle("hidden", !checking);
   $("checkStatus").textContent = checking
-    ? "Checking data availability: " + done + " of " + search.limit + (search.origin ? " nearest" : "") + " sites…"
+    ? "Checking data availability: " + done + " of " + search.limit + (search.origin ? " nearest" : "") + " sites" + (hold.n ? " (paused while a site loads)" : "") + "…"
     : pass + " of " + done + " checked site" + (done===1?"":"s") + " " + (pass===1?"has":"have") + " results in the last 12 months.";
   const left = pts.length - search.limit;
   $("checkMore").classList.toggle("hidden", checking || left <= 0);
   $("checkMore").textContent = "Check the next " + Math.min(CHECK_STEP, left) + " sites (" + fmtInt(left) + " unchecked)";
 }
 
+const rowEls = new Map();   // site id -> { li, m2 }, kept between renders so taps are not lost
+let moreLi = null, emptyLi = null;
+function makeRow(p){
+  const li = document.createElement("li"); li.dataset.id = p.id;
+  const b = document.createElement("button"); b.type = "button";
+  const n = document.createElement("span"); n.className = "name"; n.textContent = p.name;
+  const m1 = document.createElement("span"); m1.className = "meta";
+  m1.textContent = [p.id, p.dist!=null ? p.dist.toFixed(1)+" km" : null, p.type, p.status].filter(Boolean).join(" · ");
+  const m2 = document.createElement("span"); m2.className = "meta";
+  b.append(n, m1, m2); b.addEventListener("click", () => choosePoint(p)); li.appendChild(b);
+  const row = { li, m2 }; rowEls.set(p.id, row); return row;
+}
 function renderList(){
   const only = $("recentOnly").checked;
   const list = only ? search.pts.filter(isPass) : search.pts;
-  const ul = $("points"); ul.innerHTML = "";
-  list.slice(0, search.shown).forEach(p => {
-    const li = document.createElement("li");
-    const b = document.createElement("button"); b.type = "button";
-    const n = document.createElement("span"); n.className = "name"; n.textContent = p.name;
-    const m1 = document.createElement("span"); m1.className = "meta";
-    m1.textContent = [p.id, p.dist!=null ? p.dist.toFixed(1)+" km" : null, p.type, p.status].filter(Boolean).join(" · ");
-    const m2 = document.createElement("span"); m2.className = "meta" + (isPass(p) ? " good" : ""); m2.textContent = statText(p);
-    b.append(n, m1, m2); b.addEventListener("click", () => choosePoint(p));
-    li.appendChild(b); ul.appendChild(li);
+  const shownList = list.slice(0, search.shown), ul = $("points");
+  const want = new Set(shownList.map(p => p.id));
+  [...ul.children].forEach(li => { if (!li.dataset.id || !want.has(li.dataset.id)) li.remove(); });
+  shownList.forEach((p, i) => {
+    const row = rowEls.get(p.id) || makeRow(p);
+    if (ul.children[i] !== row.li) ul.insertBefore(row.li, ul.children[i] || null);
+    const txt = statText(p), cls = "meta" + (isPass(p) ? " good" : "");
+    if (row.m2.textContent !== txt) row.m2.textContent = txt;
+    if (row.m2.className !== cls) row.m2.className = cls;
   });
   const rest = list.length - search.shown;
-  if (rest > 0) {
-    const li = document.createElement("li"), b = document.createElement("button"); b.type = "button";
-    b.textContent = "Show more (" + fmtInt(rest) + " more)"; b.className = "name";
-    b.addEventListener("click", () => { search.shown += SHOW_STEP; renderList(); });
-    li.appendChild(b); ul.appendChild(li);
-  } else if (!list.length && search.pts.length) {
-    const li = document.createElement("li"); li.className = "status";
-    li.textContent = only ? "No sites with results in the last 12 months confirmed yet. Untick the filter to see all sites." : "";
-    ul.appendChild(li);
+  if (!moreLi) {
+    moreLi = document.createElement("li"); const b = document.createElement("button"); b.type = "button"; b.className = "name";
+    b.addEventListener("click", () => { search.shown += SHOW_STEP; renderList(); }); moreLi.appendChild(b);
+    emptyLi = document.createElement("li"); emptyLi.className = "status";
   }
+  if (rest > 0) { moreLi.firstChild.textContent = "Show more (" + fmtInt(rest) + " more)"; if (moreLi.parentNode !== ul) ul.appendChild(moreLi); } else moreLi.remove();
+  if (!list.length && search.pts.length) {
+    emptyLi.textContent = only ? "No sites with results in the last 12 months confirmed yet. Untick the filter to see all sites." : "";
+    if (emptyLi.parentNode !== ul) ul.appendChild(emptyLi);
+  } else emptyLi.remove();
 }
 $("recentOnly").addEventListener("change", () => { search.shown = SHOW_STEP; renderAll(); });
 
@@ -591,16 +612,31 @@ async function choosePoint(p){
   $("detCard").classList.remove("hidden"); $("chartCard").classList.add("hidden");
   $("pointTitle").textContent = p.name;
   $("pointMeta").textContent = p.id + " · " + (p.type||"") + " · " + (p.area||"") + (p.stat ? " · " + statText(p) : "");
-  if (mapState.map) selectOnMap(p.id);
+  try { if (mapState.map) selectOnMap(p.id); } catch(e){}
   const sel = $("detSel"); sel.disabled = true; sel.innerHTML = '<option value="">Checking which measurements exist…</option>';
-  $("detInfo").classList.add("hidden"); $("detStatus").className = "status"; $("detStatus").textContent = "";
+  $("detInfo").classList.add("hidden"); $("detRetry").classList.add("hidden"); $("detStatus").className = "status"; $("detStatus").textContent = "";
   $("detCard").scrollIntoView({behavior:"smooth", block:"start"});
   const token = ++state.token;
-  const path = "/sampling-point/"+encodeURIComponent(p.id)+"/observation";
-  const counts = await mapLimit(DETS, 6, async d => {
-    try { return (await api(path, { determinand:d.c, limit:1 })).totalItems||0; } catch(e){ return null; }
+  await withHold(async () => {
+    try { await loadMeasurements(p, token); }
+    catch(e){
+      if (token !== state.token) return;
+      sel.disabled = false; sel.innerHTML = '<option value="">No measurements loaded</option>';
+      $("detStatus").className = "status error"; $("detStatus").textContent = "Could not load the measurements for this site: " + (e.message || e) + ".";
+      $("detRetry").classList.remove("hidden");
+    }
+  });
+}
+$("detRetry").addEventListener("click", () => state.point && choosePoint(state.point));
+
+async function loadMeasurements(p, token){
+  const sel = $("detSel"), path = "/sampling-point/"+encodeURIComponent(p.id)+"/observation";
+  let failed = 0;
+  const counts = await mapLimit(DETS, 4, async d => {
+    try { return (await retry(() => api(path, { determinand:d.c, limit:1 }), 2)).totalItems||0; } catch(e){ failed++; return null; }
   });
   if (token !== state.token) return;
+  if (failed === DETS.length) throw new Error("the Environment Agency service did not respond");
   sel.innerHTML = '<option value="">Choose a measurement…</option>';
   const groups = new Map(); let any = 0;
   DETS.forEach((d,i) => { if (counts[i]) { any++; if (!groups.has(d.g)) groups.set(d.g, []); groups.get(d.g).push([d, counts[i]]); } });
@@ -611,18 +647,21 @@ async function choosePoint(p){
   });
   sel.disabled = false;
   $("detStatus").textContent = "Looking for other measurements at this site…";
-  if (counts.some(c => c === null)) $("detStatus").textContent += " Some checks failed (network?).";
-  let others = [];
-  try { others = await discoverOthers(p); } catch(e){}
+  let others = [], othersFailed = false;
+  try { others = await discoverOthers(p); } catch(e){ othersFailed = true; }
   if (token !== state.token) return;
   if (others.length) {
     const og = document.createElement("optgroup"); og.label = "Other measurements at this site";
     others.forEach(o => { const op = document.createElement("option"); op.value = o.c; op.textContent = o.l; op.dataset.other = "1"; og.appendChild(op); });
     sel.appendChild(og);
   }
-  $("detStatus").textContent = !(any || others.length) ? "No measurements found at this site."
-    : (any ? "" : "This site has none of the common water-quality measurements, so only its own measurements are listed. ") +
-      "Numbers in brackets are results on record. “Other measurements” are found from the earliest and latest 250 results at this site, so rarely measured items may be missing.";
+  const problems = (failed ? failed + " of " + DETS.length + " checks failed" : "") + (othersFailed ? (failed ? " and " : "") + "the search for other measurements failed" : "");
+  $("detStatus").className = problems ? "status warn" : "status";
+  $("detStatus").textContent = (!(any || others.length) ? (problems ? "" : "No measurements found at this site.") :
+    (any ? "" : "This site has none of the common water-quality measurements, so only its own measurements are listed. ") +
+    "Numbers in brackets are results on record. “Other measurements” are found from the earliest and latest 250 results at this site, so rarely measured items may be missing.") +
+    (problems ? " Note: " + problems + ", so the list may be incomplete." : "");
+  $("detRetry").classList.toggle("hidden", !problems);
 }
 
 /* Measurements outside the curated list, found in the earliest and latest page of this site's results. */
@@ -649,7 +688,8 @@ $("detSel").addEventListener("change", () => {
 });
 
 /* ---------- 3. fetch + plot ---------- */
-async function chooseDet(notation, label){
+async function chooseDet(notation, label){ return withHold(() => chooseDetInner(notation, label)); }
+async function chooseDetInner(notation, label){
   const token = ++state.token;
   state.det = { notation, label }; state.obs = [];
   $("chartCard").classList.remove("hidden");
