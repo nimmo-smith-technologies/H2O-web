@@ -269,15 +269,20 @@ async function api(path, params){
   const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 25000);   // never wait forever
   try {
     const r = await fetch(url, { headers: HDR, signal: ctl.signal });
-    if (!r.ok) throw new Error("API " + r.status + " for " + path);
+    if (!r.ok) { const e = new Error("API " + r.status + " for " + path); e.reason = "HTTP " + r.status; throw e; }
     return await r.json();
-  } catch(e){ throw e.name === "AbortError" ? new Error("The Environment Agency service timed out") : e; }
+  } catch(e){
+    if (e.name === "AbortError") { const x = new Error("The Environment Agency service timed out"); x.reason = "timed out"; throw x; }
+    if (!e.reason) e.reason = e instanceof TypeError ? "network error" : (e.message || "error");
+    throw e;
+  }
   finally { clearTimeout(timer); }
 }
 /* While the user is loading a site or its data, background site checks pause so those requests go first. */
 const hold = { n:0 };
 async function withHold(fn){ hold.n++; try { return await fn(); } finally { hold.n--; if (!hold.n) scheduleRender(); } }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+const reasonOf = e => (e && (e.reason || e.message)) || "error";
 async function retry(fn, n=2){ for (let i=0;;i++){ try { return await fn(); } catch(e){ if (i>=n) throw e; await new Promise(r=>setTimeout(r,500*(i+1))); } } }
 async function mapLimit(items, limit, fn){
   const out = new Array(items.length); let i = 0;
@@ -426,7 +431,7 @@ async function getStats(id){
       last = total === 1 ? first : (await retry(() => api(path, { limit:1, skip:total-1 }), 1)).member[0].phenomenonTime;
     }
     return { ok:true, total, first, last, recent:recent.totalItems || 0 };
-  } catch(e){ return { ok:false }; }
+  } catch(e){ return { ok:false, reason:reasonOf(e) }; }
 }
 
 async function pumpStats(token){
@@ -444,7 +449,9 @@ async function pumpStats(token){
   if (token === search.token) { search.running = false; scheduleRender(); }
 }
 $("checkMore").addEventListener("click", () => {
-  search.limit = Math.min(search.limit + CHECK_STEP, search.pts.length);
+  const bad = search.pts.filter(p => p.stat && !p.stat.ok);
+  if (bad.length) { bad.forEach(p => p.stat = null); search.next = 0; }
+  else search.limit = Math.min(search.limit + CHECK_STEP, search.pts.length);
   pumpStats(search.token); renderAll();
 });
 
@@ -475,9 +482,10 @@ function updateStatus(){
   $("checkStatus").textContent = checking
     ? "Checking data availability: " + done + " of " + search.limit + (search.origin ? " nearest" : "") + " sites" + (hold.n ? " (paused while a site loads)" : "") + "…"
     : pass + " of " + done + " checked site" + (done===1?"":"s") + " " + (pass===1?"has":"have") + " results in the last 12 months.";
-  const left = pts.length - search.limit;
-  $("checkMore").classList.toggle("hidden", checking || left <= 0);
-  $("checkMore").textContent = "Check the next " + Math.min(CHECK_STEP, left) + " sites (" + fmtInt(left) + " unchecked)";
+  const bad = pts.filter(p => p.stat && !p.stat.ok), left = pts.length - search.limit;
+  if (bad.length && !checking) $("checkStatus").textContent += " " + bad.length + " check" + (bad.length===1?"":"s") + " failed (" + [...new Set(bad.map(p => p.stat.reason))].join(", ") + ").";
+  $("checkMore").classList.toggle("hidden", checking || (left <= 0 && !bad.length));
+  $("checkMore").textContent = bad.length ? "Retry " + bad.length + " failed check" + (bad.length===1?"":"s") : "Check the next " + Math.min(CHECK_STEP, left) + " sites (" + fmtInt(left) + " unchecked)";
 }
 
 const rowEls = new Map();   // site id -> { li, m2 }, kept between renders so taps are not lost
@@ -631,12 +639,12 @@ $("detRetry").addEventListener("click", () => state.point && choosePoint(state.p
 
 async function loadMeasurements(p, token){
   const sel = $("detSel"), path = "/sampling-point/"+encodeURIComponent(p.id)+"/observation";
-  let failed = 0;
+  let failed = 0; const reasons = new Set();
   const counts = await mapLimit(DETS, 4, async d => {
-    try { return (await retry(() => api(path, { determinand:d.c, limit:1 }), 2)).totalItems||0; } catch(e){ failed++; return null; }
+    try { return (await retry(() => api(path, { determinand:d.c, limit:1 }), 2)).totalItems||0; } catch(e){ failed++; reasons.add(reasonOf(e)); return null; }
   });
   if (token !== state.token) return;
-  if (failed === DETS.length) throw new Error("the Environment Agency service did not respond");
+  if (failed === DETS.length) throw new Error("the Environment Agency service did not respond [" + [...reasons].join(", ") + "]");
   sel.innerHTML = '<option value="">Choose a measurement…</option>';
   const groups = new Map(); let any = 0;
   DETS.forEach((d,i) => { if (counts[i]) { any++; if (!groups.has(d.g)) groups.set(d.g, []); groups.get(d.g).push([d, counts[i]]); } });
@@ -648,14 +656,15 @@ async function loadMeasurements(p, token){
   sel.disabled = false;
   $("detStatus").textContent = "Looking for other measurements at this site…";
   let others = [], othersFailed = false;
-  try { others = await discoverOthers(p); } catch(e){ othersFailed = true; }
+  try { others = await discoverOthers(p); } catch(e){ othersFailed = true; reasons.add(reasonOf(e)); }
   if (token !== state.token) return;
   if (others.length) {
     const og = document.createElement("optgroup"); og.label = "Other measurements at this site";
     others.forEach(o => { const op = document.createElement("option"); op.value = o.c; op.textContent = o.l; op.dataset.other = "1"; og.appendChild(op); });
     sel.appendChild(og);
   }
-  const problems = (failed ? failed + " of " + DETS.length + " checks failed" : "") + (othersFailed ? (failed ? " and " : "") + "the search for other measurements failed" : "");
+  const why = reasons.size ? " (" + [...reasons].join(", ") + ")" : "";
+  const problems = (failed ? failed + " of " + DETS.length + " checks failed" : "") + (othersFailed ? (failed ? " and " : "") + "the search for other measurements failed" : "") + (failed || othersFailed ? why : "");
   $("detStatus").className = problems ? "status warn" : "status";
   $("detStatus").textContent = (!(any || others.length) ? (problems ? "" : "No measurements found at this site.") :
     (any ? "" : "This site has none of the common water-quality measurements, so only its own measurements are listed. ") +
