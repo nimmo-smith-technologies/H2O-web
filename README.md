@@ -38,10 +38,6 @@ Notes:
 - **River sites only.** Limits are drawn only where the site type is "FRESHWATER - RIVERS" and the plotted unit matches the standard.
 - **Left out on purpose.** The river reactive phosphorus standard is calculated per site from its alkalinity and altitude, so it is not drawn. The Directions set no river standard for nitrate or nitrite, and their groundwater threshold values are for assessing groundwater bodies, not individual sites. Drinking-water limits apply to supplied water and are not used here.
 
-## Add it to an iPhone home screen
-
-Open the live page in Safari, tap Share, then Add to Home Screen.
-
 ## Data and attribution
 
 The data come from the Environment Agency [Water Quality Archive API](https://environment.data.gov.uk/water-quality/api-docs), part of the [Water Quality Explorer](https://environment.data.gov.uk/dataset/8034d47a-ba8a-4978-aca0-bd5d6e870536) dataset (results from 2000 onwards).
