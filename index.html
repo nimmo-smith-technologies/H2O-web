@@ -610,7 +610,7 @@ async function choosePoint(p){
     sel.appendChild(og);
   });
   sel.disabled = false;
-  $("detStatus").textContent = (any ? "" : "None of the common measurements have results here. ") + "Looking for other measurements at this site…";
+  $("detStatus").textContent = "Looking for other measurements at this site…";
   if (counts.some(c => c === null)) $("detStatus").textContent += " Some checks failed (network?).";
   let others = [];
   try { others = await discoverOthers(p); } catch(e){}
@@ -620,7 +620,9 @@ async function choosePoint(p){
     others.forEach(o => { const op = document.createElement("option"); op.value = o.c; op.textContent = o.l; op.dataset.other = "1"; og.appendChild(op); });
     sel.appendChild(og);
   }
-  $("detStatus").textContent = (any || others.length) ? "Numbers in brackets are results on record. “Other measurements” are found from the earliest and latest 250 results at this site, so rarely measured items may be missing." : "No measurements found at this site.";
+  $("detStatus").textContent = !(any || others.length) ? "No measurements found at this site."
+    : (any ? "" : "This site has none of the common water-quality measurements, so only its own measurements are listed. ") +
+      "Numbers in brackets are results on record. “Other measurements” are found from the earliest and latest 250 results at this site, so rarely measured items may be missing.";
 }
 
 /* Measurements outside the curated list, found in the earliest and latest page of this site's results. */
