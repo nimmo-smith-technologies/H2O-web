@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>H2O Water Quality</title>
+<title>H₂O Water Quality</title>
 <meta name="description" content="Data plotter for Environment Agency water quality measurements in England, UK.">
 <meta name="theme-color" content="#0b5c8a">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -41,6 +41,7 @@ body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 -apple-system
 main{max-width:760px;margin:0 auto;padding:16px 0 32px}
 .top{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:14px}
 h1{font-size:1.5rem;margin:8px 0 2px}
+h1 sub{font-size:.62em;line-height:0;vertical-align:baseline;position:relative;top:.22em}
 .ver{font-size:.75rem;font-weight:600;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:1px 8px;vertical-align:middle;margin-left:6px}
 h2{font-size:1.05rem;margin:0 0 10px}
 .sub{color:var(--muted);margin:0;font-size:.92rem}
@@ -136,7 +137,7 @@ footer a{color:var(--accent)}
 <main>
   <header class="top">
     <div>
-      <h1>H2O Water Quality <span class="ver" id="ver"></span></h1>
+      <h1>H<sub>2</sub>O Water Quality <span class="ver" id="ver"></span></h1>
       <p class="sub"><a href="#data-source">Data plotter for Environment Agency measurements in England, UK</a></p>
     </div>
     <button type="button" id="themeSwitch" class="switch" role="switch" aria-checked="false" aria-label="Dark mode" title="Switch between light and dark">
