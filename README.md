@@ -9,7 +9,7 @@ Live page: https://nimmo-smith-technologies.github.io/H2O-web/
 ## What it does
 
 1. **Find a location.** Enter a postcode or a site name, press the target button to use your current position, or pan and zoom the map and tap it. Press Search to list the sampling points within 1, 3, 5, 10 or 25 km.
-2. **Check each site.** The list shows, for each site, the number of results on record, the first and latest month with results, and how many results fall in the last 12 months. A tick box hides sites with no results in the last 12 months. The map shows the same sites around the search location and radius.
+2. **Check each site.** The list shows, for each site, the number of results on record, the first and latest month with results, and how many results fall in the last 12 months. A tick box hides sites with no results in the last 12 months, and tick boxes for site types (rivers, lakes, groundwater, coastal and estuary, sewage discharges and so on) hide or show categories of site. Both filters apply to the list and the map, and the automatic data checks follow the ticked site types, nearest first. The map shows the same sites around the search location and radius.
 3. **Choose a measurement.** A dropdown lists the measurements held for the chosen site, with a plain-English note on what each common one means. Each measurement is tagged "recent" (at least one result in the last 12 months) or "historical only". The list is saved on your device for 12 hours.
 4. **Read the plot.** Results are plotted over time with a least-squares trend line, summary statistics with units, and an option to exclude statistical outliers. Results can be downloaded as CSV.
 
@@ -35,7 +35,7 @@ Notes:
 - **Statutory and recommended.** "Statutory" means a standard the Directions use to classify water bodies. "Recommended" is used for BOD, which the Directions publish but state must not be used to classify water bodies.
 - **Two bands.** River type depends on altitude and alkalinity, and temperature standards depend on salmonid or cyprinid status. The API does not provide these for a site, so the darker band marks results that fail every type and the lighter band results that fail only the stricter types.
 - **Not a breach test.** Each standard is judged on a statistic (a percentile or mean) over a classification period, so one result inside a shaded band does not by itself mean a breach. The Environment Agency and Natural Resources Wales make the official assessments.
-- **River sites only.** Limits are drawn only where the site type is "FRESHWATER - RIVERS" and the plotted unit matches the standard.
+- **River sites only.** The shading and the "Limits and sources" text, which sits below the statistics, appear only where the site type is "FRESHWATER - RIVERS". For other site types nothing is shown. Shading is drawn only where the plotted unit matches the standard.
 - **Left out on purpose.** The river reactive phosphorus standard is calculated per site from its alkalinity and altitude, so it is not drawn. The Directions set no river standard for nitrate or nitrite, and their groundwater threshold values are for assessing groundwater bodies, not individual sites. Drinking-water limits apply to supplied water and are not used here.
 
 ## Data and attribution

@@ -68,6 +68,8 @@ button:disabled,select:disabled{opacity:.55;cursor:default}
 .switch[aria-checked=true] .knob{transform:translateX(32px)}
 .switch .knob svg{width:16px;height:16px;position:absolute;top:6px;left:6px;stroke:var(--accent-ink);fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 .hint{color:var(--muted);font-size:.85rem;margin:8px 0 0}
+.subhead{font-size:.85rem;color:var(--muted);margin:8px 0 0}
+.cats{display:flex;flex-wrap:wrap;gap:0 18px}
 .lbl{display:block;font-size:.85rem;color:var(--muted);margin:10px 0 4px}
 #detSel{scroll-margin-top:48px}
 .key{background:var(--bg);border-radius:10px;padding:8px 10px;font-size:.82rem;color:var(--muted);margin-top:10px}
@@ -98,6 +100,7 @@ button:disabled,select:disabled{opacity:.55;cursor:default}
 .legend i.dash{width:16px;height:0;border-radius:0;border:0;border-top:2px dashed var(--trend);vertical-align:3px}
 .legend i.lim{width:14px;height:10px;border-radius:2px;border:1px solid}
 .limits{margin-top:12px;font-size:.84rem;color:var(--muted)}
+.limits:empty{display:none}
 .limits h3{font-size:.9rem;color:var(--ink);margin:0 0 6px}
 .limits p{margin:0 0 8px}
 .limits .tag{display:inline-block;font-size:.72rem;font-weight:700;border-radius:999px;padding:1px 8px;margin-right:6px;color:#14232e}
@@ -168,6 +171,10 @@ footer a{color:var(--accent)}
       <div class="legend"><span><i class="here"></i>Search location</span><span><i class="on"></i>Results in last 12 months</span><span><i class="old"></i>Older results only</span><span><i class="pend"></i>Not checked yet</span><span id="mapCount"></span></div>
     </div>
     <label class="inline" style="margin-top:8px"><input type="checkbox" id="recentOnly" checked> Only sites with results in the last 12 months</label>
+    <div id="typeFilter" class="hidden">
+      <div class="subhead">Site types</div>
+      <div class="cats" id="typeBoxes"></div>
+    </div>
     <div class="bar hidden" id="checkBarWrap"><i id="checkBar"></i></div>
     <p class="status" id="checkStatus" role="status"></p>
     <button type="button" id="checkMore" class="hidden" style="margin-top:6px">Check more</button>
@@ -216,8 +223,8 @@ footer a{color:var(--accent)}
     <div id="chartWrap"><svg id="chart" role="img" aria-label="Time series chart"></svg><div id="tip"></div></div>
     <div class="legend" id="chartKey"><span><i class="res"></i>Result</span><span><i class="cen"></i>Censored result</span><span><b class="xo">✕</b>Outlier (excluded)</span><span><i class="dash"></i>Trend</span></div>
     <div class="legend hidden" id="limitKey" style="margin-top:4px"></div>
-    <div class="limits" id="limits"></div>
     <div class="stats" id="stats"></div>
+    <div class="limits" id="limits"></div>
     <ul class="notes">
       <li><strong>Censored</strong> results are ones the laboratory could only report as below (&lt;) or above (&gt;) a limit. For example “&lt;0.5” means “less than 0.5”, usually because the amount was too small to measure precisely. They are drawn as hollow circles at the limit value. They are <strong>included</strong> in the line, mean, minimum, maximum and trend, taken at that limit value, so the trend can be biased when many results are censored.</li>
       <li><strong>Trend</strong> is a straight line fitted by least squares through the plotted results (after removing outliers if ticked). It is a rough guide only: there is no significance test and no allowance for seasons.</li>
@@ -381,6 +388,22 @@ const CHECK_STEP = 60;
 const STAT_CONCURRENCY = 6;
 const SHOW_STEP = 50;
 const search = { token:0, origin:null, radius:null, pts:[], total:0, desc:"", shown:SHOW_STEP, next:0, limit:0, running:false };
+/* Site categories, grouped from the API's 113 sampling point types. The first test that matches wins. */
+const SITE_CATS = [
+  { id:"rivers",  label:"Rivers",                         test:t => t === "FRESHWATER - RIVERS" },
+  { id:"lakes",   label:"Lakes, ponds and reservoirs",    test:t => t === "FRESHWATER - LAKES/PONDS/RESERVOIRS" },
+  { id:"fresh",   label:"Canals and other freshwater",    test:t => t.startsWith("FRESHWATER") },
+  { id:"gw",      label:"Groundwater",                    test:t => t.startsWith("GROUNDWATER") },
+  { id:"coast",   label:"Coastal and estuary",            test:t => t.startsWith("SALINE WATER") },
+  { id:"sewage",  label:"Sewage discharges",              test:t => /^(SEWAGE|SEWERAGE)/.test(t) },
+  { id:"trade",   label:"Trade and other discharges",     test:t => /^(TRADE|MISCELLANEOUS DISCHARGES)/.test(t) },
+  { id:"agri",    label:"Agriculture",                    test:t => t.startsWith("AGRICULTURE") },
+  { id:"waste",   label:"Waste sites",                    test:t => t.startsWith("WASTE SITE") },
+  { id:"other",   label:"Other",                          test:() => true }
+];
+const catOf = p => SITE_CATS.find(c => c.test(String(p.type || "").toUpperCase())).id;
+const catOff = new Set();                                   // categories the user has unticked; kept between searches
+const selPts = () => search.pts.filter(p => !catOff.has(p.cat));
 const recentCutoff = () => new Date(Date.now() - 365*864e5).toISOString().slice(0,10);
 
 function setFindStatus(msg, cls){ const e=$("findStatus"); e.textContent=msg||""; e.className="status "+(cls||""); }
@@ -455,13 +478,14 @@ async function runSearch(params, origin, radiusKm, desc, label){
     const g = parseWKT(m.geometry && m.geometry.asWKT);
     pts.push({ id:m.notation, name:m.prefLabel, status:m.samplingPointStatus&&m.samplingPointStatus.prefLabel,
                type:m.samplingPointType&&m.samplingPointType.prefLabel, area:m.area&&m.area.prefLabel, geo:g,
-               dist: origin&&g ? km(origin,g) : null, stat:statCache.get(m.notation) || null, idx:0 });
+               dist: origin&&g ? km(origin,g) : null, stat:statCache.get(m.notation) || null, queued:false, cat:"other" });
   }
   if (origin) pts.sort((a,b) => (a.dist??1e9) - (b.dist??1e9));
-  pts.forEach((p,i) => p.idx = i);
-  Object.assign(search, { origin, radius:radiusKm, label, pts, total, desc, shown:SHOW_STEP, next:0, limit:Math.min(CHECK_FIRST, pts.length), running:false });
+  pts.forEach(p => p.cat = catOf(p));
+  Object.assign(search, { origin, radius:radiusKm, label, pts, total, desc, shown:SHOW_STEP, limit:CHECK_FIRST, running:false, again:false });
   $("points").innerHTML = ""; rowEls.clear();
   $("listKey").classList.toggle("hidden", !pts.length);
+  renderTypeFilter();
   drawMap();
   if (!pts.length) { setFindStatus("No sampling points found " + desc + "."); renderList(); return; }
   renderAll();
@@ -487,32 +511,55 @@ async function getStats(id){
   } catch(e){ return { ok:false, reason:reasonOf(e) }; }
 }
 
+/* The next site to check: the nearest unchecked site among the ticked categories, while fewer than search.limit of them are checked or queued. */
+function nextToCheck(){
+  let used = 0;
+  for (const p of search.pts) if (!catOff.has(p.cat) && (p.stat || p.queued)) used++;
+  if (used >= search.limit) return null;
+  return search.pts.find(p => !catOff.has(p.cat) && !p.stat && !p.queued) || null;
+}
 async function pumpStats(token){
-  if (search.running) return;
+  if (search.running) { search.again = true; return; }
   search.running = true;
-  await Promise.all(Array.from({length:STAT_CONCURRENCY}, async () => {
-    while (token === search.token && search.next < search.limit) {
-      if (hold.n > 0) { await sleep(250); continue; }
-      const p = search.pts[search.next++];
-      if (p.stat) continue;
-      p.stat = await getStats(p.id);
-      scheduleRender();
-    }
-  }));
+  do {
+    search.again = false;
+    await Promise.all(Array.from({length:STAT_CONCURRENCY}, async () => {
+      while (token === search.token) {
+        if (hold.n > 0) { await sleep(250); continue; }
+        const p = nextToCheck(); if (!p) break;
+        p.queued = true;
+        p.stat = await getStats(p.id);
+        scheduleRender();
+      }
+    }));
+  } while (search.again && token === search.token);
   if (token === search.token) { search.running = false; scheduleRender(); }
 }
 $("checkMore").addEventListener("click", () => {
-  const bad = search.pts.filter(p => p.stat && !p.stat.ok);
-  if (bad.length) { bad.forEach(p => p.stat = null); search.next = 0; }
-  else search.limit = Math.min(search.limit + CHECK_STEP, search.pts.length);
+  const bad = selPts().filter(p => p.stat && !p.stat.ok);
+  if (bad.length) bad.forEach(p => { p.stat = null; p.queued = false; });
+  else search.limit += CHECK_STEP;
   pumpStats(search.token); renderAll();
 });
+
+/* Tick boxes for the categories of site present in the results, in the same style as the recent-data filter. */
+function renderTypeFilter(){
+  const counts = new Map(); search.pts.forEach(p => counts.set(p.cat, (counts.get(p.cat) || 0) + 1));
+  const wrap = $("typeBoxes"); wrap.innerHTML = "";
+  SITE_CATS.forEach(c => {
+    const n = counts.get(c.id); if (!n) return;
+    const lab = el("label", null, "inline"), cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = !catOff.has(c.id);
+    cb.addEventListener("change", () => { if (cb.checked) catOff.delete(c.id); else catOff.add(c.id); search.shown = SHOW_STEP; renderAll(); pumpStats(search.token); });
+    lab.append(cb, document.createTextNode(" " + c.label + " (" + fmtInt(n) + ")")); wrap.appendChild(lab);
+  });
+  $("typeFilter").classList.toggle("hidden", !counts.size);
+}
 
 const isPass = p => !!(p.stat && p.stat.ok && p.stat.recent > 0);
 const isInactive = p => !!(p.stat && p.stat.ok && p.stat.recent === 0);
 function statText(p){
   const s = p.stat;
-  if (!s) return p.idx < search.limit ? "Checking data…" : "Data span not checked yet";
+  if (!s) return p.queued ? "Checking data…" : "Data span not checked yet";
   if (!s.ok) return "Could not check data";
   if (!s.total) return "No results recorded";
   return fmtInt(s.total) + " results · " + fmtMonth(s.first) + " to " + fmtMonth(s.last) + " · " +
@@ -525,17 +572,18 @@ function renderAll(){ renderList(); updateMapStyles(); updateStatus(); }
 
 function updateStatus(){
   const pts = search.pts; if (!pts.length) return;
-  const done = pts.filter(p => p.stat).length, pass = pts.filter(isPass).length;
-  const checking = search.next < search.limit || search.running;
+  const sel = selPts(), done = sel.filter(p => p.stat).length, pass = sel.filter(isPass).length;
+  const pending = sel.filter(p => p.queued && !p.stat).length, checking = pending > 0 || nextToCheck() !== null;
   let msg = fmtInt(search.total) + " sampling point" + (search.total===1?"":"s") + " " + search.desc;
   if (search.total > pts.length) msg += " (loaded the first " + fmtInt(pts.length) + "; use a smaller radius to see them all)";
   setFindStatus(msg + ".");
-  $("checkBar").style.width = search.limit ? (100*Math.min(done,search.limit)/search.limit)+"%" : "0";
+  const target = Math.min(search.limit, sel.length), shownDone = Math.min(done, target);
+  $("checkBar").style.width = target ? (100*shownDone/target)+"%" : "0";
   $("checkBarWrap").classList.toggle("hidden", !checking);
-  $("checkStatus").textContent = checking
-    ? "Checking data availability: " + done + " of " + search.limit + (search.origin ? " nearest" : "") + " sites" + (hold.n ? " (paused while a site loads)" : "") + "…"
+  $("checkStatus").textContent = !sel.length ? "No site types are ticked." : checking
+    ? "Checking data availability: " + shownDone + " of " + target + (search.origin ? " nearest" : "") + " sites of the ticked types" + (hold.n ? " (paused while a site loads)" : "") + "…"
     : pass + " of " + done + " checked site" + (done===1?"":"s") + " " + (pass===1?"has":"have") + " results in the last 12 months.";
-  const bad = pts.filter(p => p.stat && !p.stat.ok), left = pts.length - search.limit;
+  const bad = sel.filter(p => p.stat && !p.stat.ok), left = sel.filter(p => !p.stat && !p.queued).length;
   if (bad.length && !checking) $("checkStatus").textContent += " " + bad.length + " check" + (bad.length===1?"":"s") + " failed (" + [...new Set(bad.map(p => p.stat.reason))].join(", ") + ").";
   $("checkMore").classList.toggle("hidden", checking || (left <= 0 && !bad.length));
   $("checkMore").textContent = bad.length ? "Retry " + bad.length + " failed check" + (bad.length===1?"":"s") : "Check the next " + Math.min(CHECK_STEP, left) + " sites (" + fmtInt(left) + " unchecked)";
@@ -555,7 +603,7 @@ function makeRow(p){
 }
 function renderList(){
   const only = $("recentOnly").checked;
-  const list = only ? search.pts.filter(isPass) : search.pts;
+  const list = selPts().filter(p => !only || isPass(p));
   const shownList = list.slice(0, search.shown), ul = $("points");
   const want = new Set(shownList.map(p => p.id));
   [...ul.children].forEach(li => { if (!li.dataset.id || !want.has(li.dataset.id)) li.remove(); });
@@ -574,7 +622,8 @@ function renderList(){
   }
   if (rest > 0) { moreLi.firstChild.textContent = "Show more (" + fmtInt(rest) + " more)"; if (moreLi.parentNode !== ul) ul.appendChild(moreLi); } else moreLi.remove();
   if (!list.length && search.pts.length) {
-    emptyLi.textContent = only ? "No sites with results in the last 12 months confirmed yet. Untick the filter to see all sites." : "";
+    emptyLi.textContent = !selPts().length ? "No site types are ticked. Tick at least one site type above."
+      : only ? "No sites with results in the last 12 months confirmed yet among the ticked site types. Untick the recent-data filter to see all of them." : "";
     if (emptyLi.parentNode !== ul) ul.appendChild(emptyLi);
   } else emptyLi.remove();
 }
@@ -645,7 +694,7 @@ function updateMapStyles(){
   let shown = 0;
   search.pts.forEach(p => {
     const m = mapState.markers.get(p.id); if (!m) return;
-    const visible = !(only && isInactive(p));
+    const visible = !catOff.has(p.cat) && !(only && isInactive(p));
     if (visible && !mapState.layer.hasLayer(m)) mapState.layer.addLayer(m);
     if (!visible && mapState.layer.hasLayer(m)) mapState.layer.removeLayer(m);
     if (visible) shown++;
@@ -942,15 +991,14 @@ function renderLimitKey(shown){
 }
 function renderLimits(unit, shown){
   const box = $("limits"); box.innerHTML = "";
-  const code = state.det && state.det.notation; if (!code) return;
+  const code = state.det && state.det.notation; if (!code || !isRiver()) return;   // limits text is for river sites only
   box.appendChild(el("h3", "Limits and sources"));
   const L = LIMITS[code], pu = prettyUnit(unit);
   if (L) {
     const p = el("p"); p.appendChild(el("span", L.kind === "statutory" ? "Statutory standard" : "Recommended value", "tag " + L.kind));
     p.appendChild(el("strong", L.name)); p.appendChild(document.createTextNode(" · " + L.basis)); box.appendChild(p);
     box.appendChild(el("p", L.text));
-    if (!isRiver()) box.appendChild(el("p", "No shading is drawn because this site is of type “" + ((state.point && state.point.type) || "unknown") + "”. These standards apply to rivers (site type “" + RIVER_TYPE + "”)."));
-    else if (unitFactor(L.unit, unit) == null) box.appendChild(el("p", "No shading is drawn because these results are in " + (pu || "an unknown unit") + ", and the standard is in " + prettyUnit(L.unit) + "."));
+    if (unitFactor(L.unit, unit) == null) box.appendChild(el("p", "No shading is drawn because these results are in " + (pu || "an unknown unit") + ", and the standard is in " + prettyUnit(L.unit) + "."));
     else if (!shown.length) box.appendChild(el("p", "No shaded band falls inside the range of the plotted results."));
     const src = el("p", "Source: "); const a = el("a", DIRECTIONS.name); a.href = DIRECTIONS.url; a.target = "_blank"; a.rel = "noopener";
     src.appendChild(a); src.appendChild(document.createTextNode(", " + L.where + ".")); box.appendChild(src);
